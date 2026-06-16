@@ -1,0 +1,189 @@
+# ============================================================
+# OralLens AI - Project .gitignore
+# Python/FastAPI backend, ML workflows, frontend tooling,
+# local runtime output, and developer-machine noise.
+# ============================================================
+
+# ------------------------------------------------------------
+# Secrets and environment files
+# ------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets/
+credentials/
+
+# ------------------------------------------------------------
+# Python cache and packaging output
+# ------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ------------------------------------------------------------
+# Python virtual environments
+# ------------------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+.envrc
+
+# ------------------------------------------------------------
+# Python test, coverage, type-check, and lint caches
+# ------------------------------------------------------------
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.mypy_cache/
+.pyre/
+.pytype/
+.ruff_cache/
+.tox/
+.nox/
+
+# ------------------------------------------------------------
+# Backend local runtime output
+# ------------------------------------------------------------
+backend/.venv/
+backend/var/
+backend/logs/
+backend/.pytest_cache/
+backend/.coverage
+
+# ------------------------------------------------------------
+# ML datasets, model artifacts, and experiment output
+# Keep small hand-written configs and docs tracked.
+# ------------------------------------------------------------
+ml/data/raw/
+ml/data/interim/
+ml/data/processed/
+ml/data/prepared/
+ml/models/
+ml/runs/
+ml/checkpoints/
+ml/artifacts/
+ml/reports/generated/
+ml/logs/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.joblib
+*.pkl
+*.pickle
+*.h5
+*.hdf5
+*.npy
+*.npz
+*.parquet
+*.feather
+
+# ------------------------------------------------------------
+# Jupyter notebooks and notebook checkpoints
+# Track intentional notebooks, ignore generated checkpoints.
+# ------------------------------------------------------------
+.ipynb_checkpoints/
+
+# ------------------------------------------------------------
+# Node/frontend dependencies and build output
+# ------------------------------------------------------------
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+frontend/.vite/
+frontend/.next/
+frontend/out/
+frontend/coverage/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ------------------------------------------------------------
+# Package manager caches
+# ------------------------------------------------------------
+.npm/
+.pnpm-store/
+.yarn/cache/
+.yarn/unplugged/
+.yarn/build-state.yml
+.yarn/install-state.gz
+
+# ------------------------------------------------------------
+# Logs and local diagnostics
+# ------------------------------------------------------------
+logs/
+*.log
+*.log.*
+*.pid
+*.seed
+*.pid.lock
+
+# ------------------------------------------------------------
+# Docker and local compose overrides
+# ------------------------------------------------------------
+docker-compose.override.yml
+compose.override.yml
+
+# ------------------------------------------------------------
+# OS files
+# ------------------------------------------------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ------------------------------------------------------------
+# Editor and IDE files
+# ------------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ------------------------------------------------------------
+# Temporary files
+# ------------------------------------------------------------
+tmp/
+temp/
+.tmp/
+.temp/
+*.tmp
+*.temp
+
