@@ -11,7 +11,9 @@ class HealthResponse(BaseModel):
 
 
 class ErrorResponse(BaseModel):
+    code: str
     detail: str
+    request_id: str
 
 
 class PredictionResponse(BaseModel):
@@ -49,4 +51,3 @@ class ScanRecord(BaseModel):
 
 class ScanListResponse(BaseModel):
     scans: list[ScanRecord]
-
