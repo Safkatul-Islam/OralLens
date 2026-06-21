@@ -1,0 +1,22 @@
+[project]
+name = "orallens-backend"
+version = "0.1.0"
+description = "FastAPI backend for the OralLens AI screening-support portfolio project."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi[standard]",
+    "pydantic-settings",
+    "python-multipart",
+]
+
+[project.optional-dependencies]
+dev = [
+    "httpx2",
+    "pytest",
+]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+pythonpath = ["."]
+testpaths = ["tests"]
