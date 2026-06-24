@@ -16,6 +16,16 @@ Official records:
 - [Part 1](https://data.mendeley.com/datasets/g8yhdvgjy2/3)
 - [Part 2](https://data.mendeley.com/datasets/xjs4bfgzj5/3)
 
+Verified Version 3 artifacts:
+
+| Part | Publisher file | Generated ZIP SHA-256 |
+| --- | --- | --- |
+| 1 | `mendeley-dataset-materials_Part_1.7z` | `9ab308d919bae0ea6104e9f4c96336be19aa4841c830b8fca1db2f92e3ebe618` |
+| 2 | `mendeley-dataset-materials_Part_2.7z` | `990691d1c01e8c83be820df22fa38520bc085e3d83efa0a96b09fb8787a49a85` |
+
+These publisher checksums apply to Mendeley's generated ZIP downloads that
+contain the listed 7z files.
+
 The publisher reports 148 patients, more than 10,000 intraoral images, nine
 standardized capture angles per patient, and plaque-severity labels reviewed by
 two dentists. The two archives are approximately 18.81 GB combined.
@@ -88,6 +98,9 @@ must never be inferred silently when the publisher metadata is ambiguous.
 - Every patient and source family belongs to exactly one split.
 - Class and patient distributions are reviewed before selecting metrics or loss.
 - Corrupt and unreadable images are identified once image decoding is added.
+
+See [`DATA_ACQUISITION.md`](DATA_ACQUISITION.md) for the reviewed download,
+checksum, archive-inspection, and extraction workflow.
 
 ## Known Limitations
 
