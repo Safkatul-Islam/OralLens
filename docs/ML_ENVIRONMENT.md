@@ -107,7 +107,7 @@ Verification completed on June 23, 2026:
 - CUDA available: yes
 - GPU: NVIDIA GeForce RTX 4070 Laptop GPU
 - CUDA tensor verification: passed with expected result `14.0`
-- Automated tests: 19 passed, 1 capability-gated skip
+- Automated tests: 45 passed, 1 capability-gated skip
 
 The skipped test requires Windows permission to create symbolic links. A
 platform-independent path-escape test passed, so dataset-root containment
