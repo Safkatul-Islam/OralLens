@@ -26,10 +26,11 @@ independent hash for the nested 7z file.
 ```text
 ml/data/raw/orthodontic_plaque/v3/
   downloads/
-    orthodontic_plaque_v3_part_1.zip.part
+    orthodontic_plaque_v3_part_1.zip
     orthodontic_plaque_v3_part_2.zip.part
   nested/
-    mendeley-dataset-materials_Part_1.7z
+    A new multi-modal dataset for Dental Plaque Diagno/
+      mendeley-dataset-materials_Part_1.7z
     mendeley-dataset-materials_Part_2.7z
 ```
 
@@ -47,6 +48,9 @@ The entire `ml/data/raw/` tree is ignored by git.
    or compression ratios.
 7. Extract expected members with bounded streaming copies and no overwrite.
 8. List and review each nested 7z with bsdtar before inner extraction.
+9. Summarize the saved listing with the project CLI to detect unsafe paths,
+   duplicate member names, extension counts, patient coverage, image-label
+   pairing gaps, and patient ID casing inconsistencies.
 
 ## Resumable Downloads
 
@@ -93,10 +97,19 @@ Windows `tar.exe` is bsdtar 3.8.4 backed by libarchive 3.8.4. The official
 libarchive format documentation lists 7-Zip read/write support and states that
 bsdtar enables libarchive formats by default.
 
-The nested archives must first be listed with `tar.exe -tf`. Their member names,
-reported sizes, directory structure, and metadata files must be reviewed before
-any inner extraction command is approved. The current tooling intentionally does
-not automate inner extraction.
+The nested archives must first be listed with `tar.exe -tf`. Save the listing
+under the ignored raw-data tree, then summarize it with the project CLI before
+any inner extraction command is approved:
+
+```powershell
+tar.exe -tf "ml\data\raw\orthodontic_plaque\v3\nested\A new multi-modal dataset for Dental Plaque Diagno\mendeley-dataset-materials_Part_1.7z" > "ml\data\raw\orthodontic_plaque\v3\nested\part-1-inner-listing.txt"
+ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.dataset --config "ml\configs\orthodontic_plaque_v3.toml" summarize-inner-listing part-1 --listing-file "ml\data\raw\orthodontic_plaque\v3\nested\part-1-inner-listing.txt"
+```
+
+Their member names, directory structure, metadata files, patient IDs, extension
+counts, and image-label pairing gaps must be reviewed before any inner
+extraction command is approved. The current tooling intentionally does not
+automate inner extraction.
 
 ## Recovery
 
@@ -114,5 +127,15 @@ extraction, and CLI behavior are covered by the complete ML test suite. The
 latest result is 45 passed tests and one capability-gated Windows symlink skip.
 The platform-independent path-containment tests still pass on this workstation.
 
-This result verifies the acquisition tooling, not the dataset. No publisher
-archive has been downloaded, hashed locally, inspected, or extracted yet.
+Part 1 has been downloaded from the official Mendeley URL, verified locally
+against SHA-256
+`9ab308d919bae0ea6104e9f4c96336be19aa4841c830b8fca1db2f92e3ebe618`, and
+finalized as `orthodontic_plaque_v3_part_1.zip`. Initial inspection showed that
+Mendeley's generated ZIP wraps the publisher 7z under
+`A new multi-modal dataset for Dental Plaque Diagno/`; the acquisition config
+pins that exact member path. The Part 1 outer ZIP has been extracted, and the
+nested 7z listing completed successfully with 9,533 entries. The listing showed
+top-level `clinical_records/`, `data/images/`, `data/labels/`,
+`legal_documents/`, and `metadata/` directories, plus a patient ID casing
+inconsistency between `Patient0033` and `patient0033` that must be handled
+during manifest adaptation. Part 2 has not yet been downloaded.
