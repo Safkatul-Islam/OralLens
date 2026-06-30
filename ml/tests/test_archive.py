@@ -12,6 +12,8 @@ from orallens_ml.data.archive import (
     ArchiveSecurityError,
     extract_outer_zip,
     inspect_zip,
+    summarize_inner_listing,
+    summarize_inner_listing_lines,
 )
 
 
@@ -164,3 +166,90 @@ def test_extract_outer_zip_never_overwrites_existing_member(tmp_path: Path) -> N
 
     with pytest.raises(ArchiveSecurityError, match="already exists"):
         extract_outer_zip(path, destination, artifact())
+
+
+def test_summarize_inner_listing_reports_dataset_shape_and_pairing() -> None:
+    report = summarize_inner_listing_lines(
+        [
+            "mendeley-dataset-materials_Part_1/",
+            "mendeley-dataset-materials_Part_1/data/images/patient0001/sample-a.jpg",
+            "mendeley-dataset-materials_Part_1/data/images/Patient0002/sample-b.JPG",
+            "mendeley-dataset-materials_Part_1/data/labels/patient0001/sample-a.txt",
+            "mendeley-dataset-materials_Part_1/data/labels/patient0002/sample-c.txt",
+            "mendeley-dataset-materials_Part_1/clinical_records/patient0001.docx",
+            "mendeley-dataset-materials_Part_1/metadata/readme.json",
+        ]
+    )
+
+    assert report.entry_count == 7
+    assert report.directory_count == 1
+    assert report.file_count == 6
+    assert report.root_entries == ("mendeley-dataset-materials_Part_1",)
+    assert report.extension_counts == {".docx": 1, ".jpg": 2, ".json": 1, ".txt": 2}
+    assert report.image_patient_count == 2
+    assert report.label_patient_count == 2
+    assert report.images_without_labels_count == 1
+    assert report.labels_without_images_count == 1
+    assert report.images_without_labels_examples == (
+        "mendeley-dataset-materials_Part_1/data/images/Patient0002/sample-b.JPG",
+    )
+    assert report.labels_without_images_examples == (
+        "mendeley-dataset-materials_Part_1/data/labels/patient0002/sample-c.txt",
+    )
+    assert report.patient_case_conflicts == {
+        "patient0002": ("Patient0002", "patient0002")
+    }
+
+
+@pytest.mark.parametrize(
+    "member",
+    [
+        "../escape.jpg",
+        "/absolute.jpg",
+        "C:/absolute.jpg",
+        "folder\\escape.jpg",
+        "folder/../escape.jpg",
+    ],
+)
+def test_summarize_inner_listing_rejects_unsafe_paths(member: str) -> None:
+    with pytest.raises(ArchiveSecurityError, match="unsafe"):
+        summarize_inner_listing_lines(["root/", member])
+
+
+def test_summarize_inner_listing_rejects_case_insensitive_duplicates() -> None:
+    with pytest.raises(ArchiveSecurityError, match="duplicate"):
+        summarize_inner_listing_lines(["root/data/file.jpg", "root/data/FILE.jpg"])
+
+
+def test_summarize_inner_listing_reads_listing_file(tmp_path: Path) -> None:
+    listing = tmp_path / "part-1-listing.txt"
+    listing.write_text(
+        "\n".join(
+            [
+                "mendeley-dataset-materials_Part_1/",
+                "mendeley-dataset-materials_Part_1/data/images/patient0001/sample.jpg",
+                "mendeley-dataset-materials_Part_1/data/labels/patient0001/sample.txt",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    report = summarize_inner_listing(listing)
+
+    assert report.listing_path == listing
+    assert report.image_file_count == 1
+    assert report.label_file_count == 1
+
+
+def test_summarize_inner_listing_strips_bom_from_first_member() -> None:
+    report = summarize_inner_listing_lines(
+        [
+            "\ufeffmendeley-dataset-materials_Part_1/",
+            "mendeley-dataset-materials_Part_1/data/images/patient0001/sample.jpg",
+            "mendeley-dataset-materials_Part_1/data/labels/patient0001/sample.txt",
+        ]
+    )
+
+    assert report.root_entries == ("mendeley-dataset-materials_Part_1",)
+    assert report.image_file_count == 1
+    assert report.label_file_count == 1
