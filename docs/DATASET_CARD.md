@@ -2,9 +2,11 @@
 
 ## Status
 
-Candidate dataset selected. The archives have not been downloaded, and their
-internal file structure has not yet been audited. This card records verified
-publisher metadata and the controls required before training.
+Candidate dataset selected. Part 1 has been downloaded from the official
+Mendeley URL, verified by SHA-256, finalized locally, outer-extracted, and
+listed read-only at the nested 7z layer. Inner extraction has not been approved
+or run. This card records verified publisher metadata and the controls required
+before training.
 
 ## Dataset
 
@@ -20,11 +22,12 @@ Verified Version 3 artifacts:
 
 | Part | Publisher file | Generated ZIP SHA-256 |
 | --- | --- | --- |
-| 1 | `mendeley-dataset-materials_Part_1.7z` | `9ab308d919bae0ea6104e9f4c96336be19aa4841c830b8fca1db2f92e3ebe618` |
+| 1 | `A new multi-modal dataset for Dental Plaque Diagno/mendeley-dataset-materials_Part_1.7z` | `9ab308d919bae0ea6104e9f4c96336be19aa4841c830b8fca1db2f92e3ebe618` |
 | 2 | `mendeley-dataset-materials_Part_2.7z` | `990691d1c01e8c83be820df22fa38520bc085e3d83efa0a96b09fb8787a49a85` |
 
 These publisher checksums apply to Mendeley's generated ZIP downloads that
-contain the listed 7z files.
+contain the listed 7z files. The Part 1 path reflects the real member path
+observed after verifying the downloaded ZIP against the official hash.
 
 The publisher reports 148 patients, more than 10,000 intraoral images, nine
 standardized capture angles per patient, and plaque-severity labels reviewed by
@@ -94,6 +97,8 @@ must never be inferred silently when the publisher metadata is ambiguous.
 - Every manifest path resolves inside the dataset root.
 - Every referenced image exists and uses an approved image extension.
 - Sample IDs and paths are unique.
+- Patient ID casing is normalized and reviewed because Part 1 includes at least
+  one casing inconsistency between image and label directories.
 - One source image never crosses patients or labels.
 - Every patient and source family belongs to exactly one split.
 - Class and patient distributions are reviewed before selecting metrics or loss.
@@ -104,7 +109,12 @@ checksum, archive-inspection, and extraction workflow.
 
 ## Known Limitations
 
-- Archive layout and detailed metadata schema remain unverified until download.
+- Part 1 is verified, finalized, outer-extracted, and listed read-only at the
+  inner 7z layer, but inner extraction and manifest adaptation remain pending.
+- The Part 1 listing shows a patient ID casing inconsistency that must be
+  handled explicitly during manifest generation.
+- Part 2 archive layout and detailed metadata schema remain unverified until
+  download.
 - The population is clinically narrow.
 - Publisher-generated augmentations may not reflect real-world acquisition shift.
 - Label agreement statistics and subgroup coverage require further audit.
