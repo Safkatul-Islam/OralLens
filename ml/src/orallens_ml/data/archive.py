@@ -1,8 +1,11 @@
-"""Read-only ZIP inspection and bounded outer-archive extraction."""
+"""Read-only archive inspection and bounded outer-archive extraction."""
 
 from __future__ import annotations
 
+from collections import Counter, defaultdict
+from collections.abc import Iterable
 import os
+import re
 import stat
 import zipfile
 from dataclasses import dataclass
@@ -19,6 +22,10 @@ _ALLOWED_COMPRESSION_METHODS = frozenset(
     }
 )
 _COPY_CHUNK_SIZE = 1024 * 1024
+_PATIENT_PATTERN = re.compile(r"^patient\d{4}$", re.IGNORECASE)
+_IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png"})
+_LABEL_EXTENSION = ".txt"
+_MAX_EXAMPLES = 25
 
 
 class ArchiveSecurityError(AcquisitionError):
@@ -43,6 +50,29 @@ class ArchiveReport:
     entries: tuple[ArchiveEntry, ...]
     total_compressed_bytes: int
     total_uncompressed_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class InnerArchiveListingReport:
+    """Read-only summary of a nested archive listing."""
+
+    listing_path: Path
+    entry_count: int
+    directory_count: int
+    file_count: int
+    root_entries: tuple[str, ...]
+    extension_counts: dict[str, int]
+    image_file_count: int
+    label_file_count: int
+    image_patient_count: int
+    label_patient_count: int
+    image_patients_without_labels: tuple[str, ...]
+    label_patients_without_images: tuple[str, ...]
+    images_without_labels_count: int
+    labels_without_images_count: int
+    images_without_labels_examples: tuple[str, ...]
+    labels_without_images_examples: tuple[str, ...]
+    patient_case_conflicts: dict[str, tuple[str, ...]]
 
 
 def inspect_zip(zip_path: Path, artifact: DatasetArtifact) -> ArchiveReport:
@@ -187,6 +217,114 @@ def extract_outer_zip(
     return tuple(extracted)
 
 
+def summarize_inner_listing(listing_path: Path) -> InnerArchiveListingReport:
+    """Summarize a saved `tar -tf` style listing without extracting files."""
+
+    path = Path(listing_path)
+    if path.is_symlink() or not path.is_file():
+        raise ArchiveSecurityError(f"Listing is not a regular file: {path}")
+
+    entries = path.read_text(encoding="utf-8").splitlines()
+    return summarize_inner_listing_lines(entries, listing_path=path)
+
+
+def summarize_inner_listing_lines(
+    lines: Iterable[str],
+    *,
+    listing_path: Path | None = None,
+) -> InnerArchiveListingReport:
+    """Validate and summarize nested archive member names from listing lines."""
+
+    raw_entries = _normalize_listing_lines(lines)
+    if not raw_entries:
+        raise ArchiveSecurityError("Inner archive listing is empty")
+
+    seen: set[str] = set()
+    directory_count = 0
+    file_count = 0
+    roots: set[str] = set()
+    extensions: Counter[str] = Counter()
+    patient_spellings: dict[str, set[str]] = defaultdict(set)
+    image_patients: set[str] = set()
+    label_patients: set[str] = set()
+    image_keys: dict[tuple[str, str], str] = {}
+    label_keys: dict[tuple[str, str], str] = {}
+
+    for raw_name in raw_entries:
+        member_name = _validated_listing_member_name(raw_name)
+        normalized = member_name.casefold()
+        if normalized in seen:
+            raise ArchiveSecurityError(f"Listing contains duplicate member path: {member_name}")
+        seen.add(normalized)
+
+        is_directory = member_name.endswith("/")
+        parts = PurePosixPath(member_name.rstrip("/")).parts
+        roots.add(parts[0])
+        if is_directory:
+            directory_count += 1
+            continue
+
+        file_count += 1
+        suffix = PurePosixPath(member_name).suffix.lower() or "<none>"
+        extensions[suffix] += 1
+        _collect_inner_dataset_member(
+            member_name,
+            image_patients=image_patients,
+            label_patients=label_patients,
+            patient_spellings=patient_spellings,
+            image_keys=image_keys,
+            label_keys=label_keys,
+        )
+
+    image_key_set = set(image_keys)
+    label_key_set = set(label_keys)
+    missing_labels = sorted(image_key_set - label_key_set)
+    missing_images = sorted(label_key_set - image_key_set)
+    case_conflicts = {
+        patient: tuple(sorted(spellings))
+        for patient, spellings in sorted(patient_spellings.items())
+        if len(spellings) > 1
+    }
+
+    return InnerArchiveListingReport(
+        listing_path=Path() if listing_path is None else Path(listing_path),
+        entry_count=len(raw_entries),
+        directory_count=directory_count,
+        file_count=file_count,
+        root_entries=tuple(sorted(roots)),
+        extension_counts=dict(sorted(extensions.items())),
+        image_file_count=len(image_keys),
+        label_file_count=len(label_keys),
+        image_patient_count=len(image_patients),
+        label_patient_count=len(label_patients),
+        image_patients_without_labels=tuple(sorted(image_patients - label_patients)),
+        label_patients_without_images=tuple(sorted(label_patients - image_patients)),
+        images_without_labels_count=len(missing_labels),
+        labels_without_images_count=len(missing_images),
+        images_without_labels_examples=tuple(
+            image_keys[key] for key in missing_labels[:_MAX_EXAMPLES]
+        ),
+        labels_without_images_examples=tuple(
+            label_keys[key] for key in missing_images[:_MAX_EXAMPLES]
+        ),
+        patient_case_conflicts=case_conflicts,
+    )
+
+
+def _normalize_listing_lines(lines: Iterable[str]) -> list[str]:
+    entries: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if not entries:
+            stripped = stripped.removeprefix("\ufeff")
+            if not stripped:
+                continue
+        entries.append(stripped)
+    return entries
+
+
 def _validated_member_name(info: zipfile.ZipInfo) -> str:
     raw_name = info.orig_filename
     if not raw_name or "\x00" in raw_name:
@@ -211,3 +349,52 @@ def _validated_member_name(info: zipfile.ZipInfo) -> str:
     if file_type not in {0, stat.S_IFREG}:
         raise ArchiveSecurityError(f"ZIP member is not a regular file: {raw_name}")
     return posix_path.as_posix()
+
+
+def _validated_listing_member_name(raw_name: str) -> str:
+    if not raw_name or "\x00" in raw_name:
+        raise ArchiveSecurityError("Listing contains an empty or null member name")
+    if "\\" in raw_name or ":" in raw_name:
+        raise ArchiveSecurityError(f"Inner archive member uses an unsafe Windows path: {raw_name}")
+
+    name_without_trailing_slash = raw_name.rstrip("/")
+    posix_path = PurePosixPath(name_without_trailing_slash)
+    windows_path = PureWindowsPath(name_without_trailing_slash)
+    if (
+        posix_path.is_absolute()
+        or windows_path.is_absolute()
+        or windows_path.drive
+        or any(part in {"", ".", ".."} for part in name_without_trailing_slash.split("/"))
+    ):
+        raise ArchiveSecurityError(f"Inner archive member path is unsafe: {raw_name}")
+    return f"{posix_path.as_posix()}/" if raw_name.endswith("/") else posix_path.as_posix()
+
+
+def _collect_inner_dataset_member(
+    member_name: str,
+    *,
+    image_patients: set[str],
+    label_patients: set[str],
+    patient_spellings: dict[str, set[str]],
+    image_keys: dict[tuple[str, str], str],
+    label_keys: dict[tuple[str, str], str],
+) -> None:
+    parts = PurePosixPath(member_name).parts
+    if len(parts) < 5 or parts[1] != "data":
+        return
+
+    section = parts[2]
+    patient = parts[3]
+    if not _PATIENT_PATTERN.match(patient):
+        return
+
+    normalized_patient = patient.casefold()
+    patient_spellings[normalized_patient].add(patient)
+    stem = PurePosixPath(parts[-1]).stem.casefold()
+    key = (normalized_patient, stem)
+    if section == "images" and PurePosixPath(member_name).suffix.lower() in _IMAGE_EXTENSIONS:
+        image_patients.add(normalized_patient)
+        image_keys[key] = member_name
+    elif section == "labels" and PurePosixPath(member_name).suffix.lower() == _LABEL_EXTENSION:
+        label_patients.add(normalized_patient)
+        label_keys[key] = member_name
