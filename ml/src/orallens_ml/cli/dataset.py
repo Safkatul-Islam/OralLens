@@ -15,7 +15,11 @@ from orallens_ml.data.acquisition import (
     load_release_config,
     verify_download,
 )
-from orallens_ml.data.archive import extract_outer_zip, inspect_zip
+from orallens_ml.data.archive import (
+    extract_outer_zip,
+    inspect_zip,
+    summarize_inner_listing,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -41,6 +45,10 @@ def build_parser() -> argparse.ArgumentParser:
     extract_parser.add_argument("artifact_id")
     extract_parser.add_argument("--downloads-dir", type=Path, required=True)
     extract_parser.add_argument("--destination-dir", type=Path, required=True)
+
+    inner_parser = subparsers.add_parser("summarize-inner-listing")
+    inner_parser.add_argument("artifact_id")
+    inner_parser.add_argument("--listing-file", type=Path, required=True)
     return parser
 
 
@@ -90,7 +98,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "status": "safe-to-extract-outer",
                 "total_uncompressed_bytes": report.total_uncompressed_bytes,
             }
-        else:
+        elif args.command == "extract-outer":
             path = artifact_path(args.downloads_dir, artifact, finalized=True)
             verify_download(path, artifact)
             extracted = extract_outer_zip(path, args.destination_dir, artifact)
@@ -98,6 +106,39 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "artifact_id": artifact.artifact_id,
                 "paths": [str(path) for path in extracted],
                 "status": "outer-extracted",
+            }
+        else:
+            report = summarize_inner_listing(args.listing_file)
+            payload = {
+                "directory_count": report.directory_count,
+                "entry_count": report.entry_count,
+                "extension_counts": report.extension_counts,
+                "file_count": report.file_count,
+                "image_file_count": report.image_file_count,
+                "image_patient_count": report.image_patient_count,
+                "image_patients_without_labels": list(
+                    report.image_patients_without_labels
+                ),
+                "images_without_labels_count": report.images_without_labels_count,
+                "images_without_labels_examples": list(
+                    report.images_without_labels_examples
+                ),
+                "label_file_count": report.label_file_count,
+                "label_patient_count": report.label_patient_count,
+                "label_patients_without_images": list(
+                    report.label_patients_without_images
+                ),
+                "labels_without_images_count": report.labels_without_images_count,
+                "labels_without_images_examples": list(
+                    report.labels_without_images_examples
+                ),
+                "listing_path": str(report.listing_path),
+                "patient_case_conflicts": {
+                    key: list(value)
+                    for key, value in report.patient_case_conflicts.items()
+                },
+                "root_entries": list(report.root_entries),
+                "status": "inner-listing-summarized",
             }
     except (AcquisitionError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
