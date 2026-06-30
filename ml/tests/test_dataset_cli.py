@@ -76,3 +76,36 @@ def test_cli_returns_safe_error_without_traceback(tmp_path: Path, capsys: object
     assert captured.out == ""
     assert captured.err.startswith("error: SHA-256 mismatch")
     assert "Traceback" not in captured.err
+
+
+def test_cli_summarizes_inner_listing(tmp_path: Path, capsys: object) -> None:
+    config = tmp_path / "source.toml"
+    write_config(config, "a" * 64)
+    listing = tmp_path / "part-1-listing.txt"
+    listing.write_text(
+        "\n".join(
+            [
+                "mendeley-dataset-materials_Part_1/",
+                "mendeley-dataset-materials_Part_1/data/images/patient0001/sample.jpg",
+                "mendeley-dataset-materials_Part_1/data/labels/patient0001/sample.txt",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = main(
+        [
+            "--config",
+            str(config),
+            "summarize-inner-listing",
+            "part-1",
+            "--listing-file",
+            str(listing),
+        ]
+    )
+
+    captured = capsys.readouterr()  # type: ignore[attr-defined]
+    assert exit_code == 0
+    assert '"status": "inner-listing-summarized"' in captured.out
+    assert '"image_file_count": 1' in captured.out
+    assert captured.err == ""
