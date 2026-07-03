@@ -10,8 +10,10 @@ import pytest
 from orallens_ml.data.acquisition import DatasetArtifact
 from orallens_ml.data.archive import (
     ArchiveSecurityError,
+    convert_7zip_slt_listing_lines,
     extract_outer_zip,
     inspect_zip,
+    summarize_7zip_slt_listing,
     summarize_inner_listing,
     summarize_inner_listing_lines,
 )
@@ -253,3 +255,81 @@ def test_summarize_inner_listing_strips_bom_from_first_member() -> None:
     assert report.root_entries == ("mendeley-dataset-materials_Part_1",)
     assert report.image_file_count == 1
     assert report.label_file_count == 1
+
+
+def test_convert_7zip_slt_listing_skips_archive_metadata_and_preserves_folders() -> None:
+    converted = convert_7zip_slt_listing_lines(
+        [
+            "Path = ml\\data\\nested\\part.7z",
+            "Type = 7z",
+            "Physical Size = 123",
+            "",
+            "Path = mendeley-dataset-materials_Part_2\\clinical_records",
+            "Folder = +",
+            "",
+            "Path = mendeley-dataset-materials_Part_2\\data\\images\\patient0001\\sample.jpg",
+            "Folder = -",
+            "Size = 10",
+            "",
+            "Path = mendeley-dataset-materials_Part_2\\data\\labels\\patient0001\\sample.txt",
+            "Attributes = A",
+            "Size = 1",
+        ]
+    )
+
+    assert converted == [
+        "mendeley-dataset-materials_Part_2/clinical_records/",
+        "mendeley-dataset-materials_Part_2/data/images/patient0001/sample.jpg",
+        "mendeley-dataset-materials_Part_2/data/labels/patient0001/sample.txt",
+    ]
+
+
+def test_summarize_7zip_slt_listing_uses_existing_shape_validation(tmp_path: Path) -> None:
+    listing = tmp_path / "part-2.slt"
+    listing.write_text(
+        "\n".join(
+            [
+                "Path = C:\\archive\\part.7z",
+                "Type = 7z",
+                "",
+                "Path = mendeley-dataset-materials_Part_2\\data",
+                "Folder = +",
+                "",
+                "Path = mendeley-dataset-materials_Part_2\\data\\images\\patient0001\\sample.jpg",
+                "Size = 10",
+                "",
+                "Path = mendeley-dataset-materials_Part_2\\data\\labels\\patient0001\\sample.txt",
+                "Size = 1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    report = summarize_7zip_slt_listing(listing)
+
+    assert report.listing_path == listing
+    assert report.directory_count == 1
+    assert report.file_count == 2
+    assert report.image_file_count == 1
+    assert report.label_file_count == 1
+
+
+def test_summarize_7zip_slt_listing_rejects_unsafe_normalized_paths(
+    tmp_path: Path,
+) -> None:
+    listing = tmp_path / "unsafe.slt"
+    listing.write_text(
+        "\n".join(
+            [
+                "Path = C:\\archive\\part.7z",
+                "Type = 7z",
+                "",
+                "Path = root\\..\\escape.jpg",
+                "Size = 1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ArchiveSecurityError, match="unsafe"):
+        summarize_7zip_slt_listing(listing)
