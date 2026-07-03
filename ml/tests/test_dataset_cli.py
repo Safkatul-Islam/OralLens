@@ -109,3 +109,47 @@ def test_cli_summarizes_inner_listing(tmp_path: Path, capsys: object) -> None:
     assert '"status": "inner-listing-summarized"' in captured.out
     assert '"image_file_count": 1' in captured.out
     assert captured.err == ""
+
+
+def test_cli_summarizes_7zip_slt_inner_listing(tmp_path: Path, capsys: object) -> None:
+    config = tmp_path / "source.toml"
+    write_config(config, "a" * 64)
+    listing = tmp_path / "part-1.slt"
+    listing.write_text(
+        "\n".join(
+            [
+                "Path = C:\\archive\\part.7z",
+                "Type = 7z",
+                "",
+                "Path = mendeley-dataset-materials_Part_1\\data",
+                "Folder = +",
+                "",
+                "Path = mendeley-dataset-materials_Part_1\\data\\images\\patient0001\\sample.jpg",
+                "Size = 10",
+                "",
+                "Path = mendeley-dataset-materials_Part_1\\data\\labels\\patient0001\\sample.txt",
+                "Size = 1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = main(
+        [
+            "--config",
+            str(config),
+            "summarize-inner-listing",
+            "part-1",
+            "--listing-file",
+            str(listing),
+            "--format",
+            "7z-slt",
+        ]
+    )
+
+    captured = capsys.readouterr()  # type: ignore[attr-defined]
+    assert exit_code == 0
+    assert '"status": "inner-listing-summarized"' in captured.out
+    assert '"directory_count": 1' in captured.out
+    assert '"image_file_count": 1' in captured.out
+    assert captured.err == ""
