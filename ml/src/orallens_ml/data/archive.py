@@ -228,6 +228,42 @@ def summarize_inner_listing(listing_path: Path) -> InnerArchiveListingReport:
     return summarize_inner_listing_lines(entries, listing_path=path)
 
 
+def summarize_7zip_slt_listing(listing_path: Path) -> InnerArchiveListingReport:
+    """Summarize a saved `7z l -slt` technical listing without extracting files."""
+
+    path = Path(listing_path)
+    if path.is_symlink() or not path.is_file():
+        raise ArchiveSecurityError(f"Listing is not a regular file: {path}")
+
+    entries = convert_7zip_slt_listing_lines(path.read_text(encoding="utf-8").splitlines())
+    return summarize_inner_listing_lines(entries, listing_path=path)
+
+
+def convert_7zip_slt_listing_lines(lines: Iterable[str]) -> list[str]:
+    """Convert `7z l -slt` output into normalized archive member names.
+
+    Official 7-Zip on Windows emits backslash-separated paths in technical listings.
+    This function normalizes those display paths to POSIX archive paths and preserves
+    directory markers before the existing strict listing validator runs.
+    """
+
+    entries: list[str] = []
+    for block in _iter_7zip_slt_blocks(lines):
+        path = block.get("Path")
+        if path is None:
+            continue
+        if "Type" in block:
+            continue
+
+        normalized_path = path.replace("\\", "/").rstrip("/")
+        if not normalized_path:
+            continue
+        if block.get("Folder") == "+" or block.get("Attributes", "").startswith("D"):
+            normalized_path = f"{normalized_path}/"
+        entries.append(normalized_path)
+    return entries
+
+
 def summarize_inner_listing_lines(
     lines: Iterable[str],
     *,
@@ -323,6 +359,22 @@ def _normalize_listing_lines(lines: Iterable[str]) -> list[str]:
                 continue
         entries.append(stripped)
     return entries
+
+
+def _iter_7zip_slt_blocks(lines: Iterable[str]) -> Iterable[dict[str, str]]:
+    block: dict[str, str] = {}
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            if block:
+                yield block
+                block = {}
+            continue
+        key, separator, value = stripped.partition(" = ")
+        if separator:
+            block[key] = value
+    if block:
+        yield block
 
 
 def _validated_member_name(info: zipfile.ZipInfo) -> str:
