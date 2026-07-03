@@ -18,6 +18,7 @@ from orallens_ml.data.acquisition import (
 from orallens_ml.data.archive import (
     extract_outer_zip,
     inspect_zip,
+    summarize_7zip_slt_listing,
     summarize_inner_listing,
 )
 
@@ -49,6 +50,12 @@ def build_parser() -> argparse.ArgumentParser:
     inner_parser = subparsers.add_parser("summarize-inner-listing")
     inner_parser.add_argument("artifact_id")
     inner_parser.add_argument("--listing-file", type=Path, required=True)
+    inner_parser.add_argument(
+        "--format",
+        choices=("plain", "7z-slt"),
+        default="plain",
+        help="Input listing format. Use 7z-slt for saved `7z l -slt` output.",
+    )
     return parser
 
 
@@ -108,7 +115,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "status": "outer-extracted",
             }
         else:
-            report = summarize_inner_listing(args.listing_file)
+            if args.format == "7z-slt":
+                report = summarize_7zip_slt_listing(args.listing_file)
+            else:
+                report = summarize_inner_listing(args.listing_file)
             payload = {
                 "directory_count": report.directory_count,
                 "entry_count": report.entry_count,
