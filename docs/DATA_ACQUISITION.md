@@ -51,6 +51,7 @@ The entire `ml/data/raw/` tree is ignored by git.
 9. Summarize the saved listing with the project CLI to detect unsafe paths,
    duplicate member names, extension counts, patient coverage, image-label
    pairing gaps, and patient ID casing inconsistencies.
+10. Test each nested 7z with official 7-Zip before trusting extracted files.
 
 ## Resumable Downloads
 
@@ -89,7 +90,8 @@ Only after inspection reports `safe-to-extract-outer`:
 ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.dataset --config "ml\configs\orthodontic_plaque_v3.toml" extract-outer part-1 --downloads-dir "ml\data\raw\orthodontic_plaque\v3\downloads" --destination-dir "ml\data\raw\orthodontic_plaque\v3\nested"
 ```
 
-Repeat with `part-2` only after Part 1 completes successfully.
+Repeat with `part-2` after each previous artifact has either completed all
+integrity gates or has been documented as unusable.
 
 ## Inner 7z Boundary
 
@@ -111,6 +113,12 @@ counts, and image-label pairing gaps must be reviewed before any inner
 extraction command is approved. The current tooling intentionally does not
 automate inner extraction.
 
+Before trusting extracted files, run an official 7-Zip integrity test:
+
+```powershell
+& "C:\Program Files\7-Zip\7z.exe" t "ml\data\raw\orthodontic_plaque\v3\nested\A new multi-modal dataset for Dental Plaque Diagno\mendeley-dataset-materials_Part_1.7z"
+```
+
 ## Recovery
 
 - Interrupted download: retain the `.part` file and rerun the same curl command.
@@ -119,12 +127,15 @@ automate inner extraction.
 - Unexpected ZIP member: stop and compare the current publisher record and
   configuration. Never weaken the policy merely to make extraction proceed.
 - Existing extraction target: stop and inspect it. The extractor never overwrites.
+- Inner 7z CRC failure: do not use partial extraction output for training.
+  Keep the failure documented and move to the next artifact or publisher review.
 
 ## Implementation Verification
 
 The acquisition configuration, hashing, finalization, ZIP inspection, bounded
-extraction, and CLI behavior are covered by the complete ML test suite. The
-latest result is 45 passed tests and one capability-gated Windows symlink skip.
+extraction, inner-listing summarization, and CLI behavior are covered by the
+complete ML test suite. The latest focused archive result is 22 passed tests
+using a project-local pytest base temp to avoid Windows temp permission issues.
 The platform-independent path-containment tests still pass on this workstation.
 
 Part 1 has been downloaded from the official Mendeley URL, verified locally
@@ -134,8 +145,15 @@ finalized as `orthodontic_plaque_v3_part_1.zip`. Initial inspection showed that
 Mendeley's generated ZIP wraps the publisher 7z under
 `A new multi-modal dataset for Dental Plaque Diagno/`; the acquisition config
 pins that exact member path. The Part 1 outer ZIP has been extracted, and the
-nested 7z listing completed successfully with 9,533 entries. The listing showed
+nested 7z listing completed successfully with 11,089 entries. The listing showed
 top-level `clinical_records/`, `data/images/`, `data/labels/`,
 `legal_documents/`, and `metadata/` directories, plus a patient ID casing
-inconsistency between `Patient0033` and `patient0033` that must be handled
-during manifest adaptation. Part 2 has not yet been downloaded.
+inconsistency between `Patient0033` and `patient0033` that must be handled if a
+clean replacement artifact becomes available.
+
+Part 1 is not trusted for training. Windows `tar.exe` extraction and official
+7-Zip 26.02 both failed on the same inner member:
+`mendeley-dataset-materials_Part_1\data\images\patient0002\patient0002_20251028_bottom-left_rotate-right-15.jpg`.
+The official 7-Zip integrity test reported `ERROR: CRC Failed` for that file.
+Any partial extraction under `ml/data/raw/orthodontic_plaque/v3/extracted/part-1`
+must be treated as unusable. Part 2 has not yet been downloaded.
