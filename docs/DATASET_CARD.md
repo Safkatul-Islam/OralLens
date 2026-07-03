@@ -4,9 +4,10 @@
 
 Candidate dataset selected. Part 1 has been downloaded from the official
 Mendeley URL, verified by SHA-256, finalized locally, outer-extracted, and
-listed read-only at the nested 7z layer. Inner extraction has not been approved
-or run. This card records verified publisher metadata and the controls required
-before training.
+listed read-only at the nested 7z layer. Official 7-Zip integrity testing fails
+inside the Part 1 7z payload, so Part 1 is not trusted for training. This card
+records verified publisher metadata, the integrity blocker, and the controls
+required before training.
 
 ## Dataset
 
@@ -94,6 +95,8 @@ must never be inferred silently when the publisher metadata is ambiguous.
 ## Pre-Training Acceptance Checks
 
 - Dataset version and license match the official records.
+- Every nested archive passes an official 7-Zip integrity test before extracted
+  files are trusted.
 - Every manifest path resolves inside the dataset root.
 - Every referenced image exists and uses an approved image extension.
 - Sample IDs and paths are unique.
@@ -109,10 +112,13 @@ checksum, archive-inspection, and extraction workflow.
 
 ## Known Limitations
 
-- Part 1 is verified, finalized, outer-extracted, and listed read-only at the
-  inner 7z layer, but inner extraction and manifest adaptation remain pending.
+- Part 1 outer ZIP matches the publisher SHA-256, but the inner 7z fails
+  official 7-Zip 26.02 integrity testing with a CRC failure at
+  `mendeley-dataset-materials_Part_1\data\images\patient0002\patient0002_20251028_bottom-left_rotate-right-15.jpg`.
+- Any partial Part 1 extraction must not be used for training, validation,
+  testing, manifest generation, or demos.
 - The Part 1 listing shows a patient ID casing inconsistency that must be
-  handled explicitly during manifest generation.
+  handled explicitly if a clean replacement artifact becomes available.
 - Part 2 archive layout and detailed metadata schema remain unverified until
   download.
 - The population is clinically narrow.
