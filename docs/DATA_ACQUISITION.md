@@ -27,11 +27,13 @@ independent hash for the nested 7z file.
 ml/data/raw/orthodontic_plaque/v3/
   downloads/
     orthodontic_plaque_v3_part_1.zip
-    orthodontic_plaque_v3_part_2.zip.part
+    orthodontic_plaque_v3_part_2.zip
   nested/
     A new multi-modal dataset for Dental Plaque Diagno/
       mendeley-dataset-materials_Part_1.7z
-    mendeley-dataset-materials_Part_2.7z
+      mendeley-dataset-materials_Part_2.7z
+    part-1-inner-listing.txt
+    part-2-inner-listing.slt
 ```
 
 The entire `ml/data/raw/` tree is ignored by git.
@@ -47,7 +49,8 @@ The entire `ml/data/raw/` tree is ignored by git.
    encryption, unsupported compression, unexpected members, and excessive sizes
    or compression ratios.
 7. Extract expected members with bounded streaming copies and no overwrite.
-8. List and review each nested 7z with bsdtar before inner extraction.
+8. List and review each nested 7z with official 7-Zip technical-listing output
+   before inner extraction.
 9. Summarize the saved listing with the project CLI to detect unsafe paths,
    duplicate member names, extension counts, patient coverage, image-label
    pairing gaps, and patient ID casing inconsistencies.
@@ -95,29 +98,20 @@ integrity gates or has been documented as unusable.
 
 ## Inner 7z Boundary
 
-Windows `tar.exe` is bsdtar 3.8.4 backed by libarchive 3.8.4. The official
-libarchive format documentation lists 7-Zip read/write support and states that
-bsdtar enables libarchive formats by default.
-
-The nested archives must first be listed with `tar.exe -tf`. Save the listing
-under the ignored raw-data tree, then summarize it with the project CLI before
-any inner extraction command is approved:
+The nested archives must first be tested and listed with official 7-Zip. Save
+the raw `7z l -slt` output under the ignored raw-data tree, then summarize it
+with the project CLI before any inner extraction command is approved:
 
 ```powershell
-tar.exe -tf "ml\data\raw\orthodontic_plaque\v3\nested\A new multi-modal dataset for Dental Plaque Diagno\mendeley-dataset-materials_Part_1.7z" > "ml\data\raw\orthodontic_plaque\v3\nested\part-1-inner-listing.txt"
-ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.dataset --config "ml\configs\orthodontic_plaque_v3.toml" summarize-inner-listing part-1 --listing-file "ml\data\raw\orthodontic_plaque\v3\nested\part-1-inner-listing.txt"
+& "C:\Program Files\7-Zip\7z.exe" t "ml\data\raw\orthodontic_plaque\v3\nested\A new multi-modal dataset for Dental Plaque Diagno\mendeley-dataset-materials_Part_2.7z"
+& "C:\Program Files\7-Zip\7z.exe" l -slt "ml\data\raw\orthodontic_plaque\v3\nested\A new multi-modal dataset for Dental Plaque Diagno\mendeley-dataset-materials_Part_2.7z" | Set-Content -Encoding utf8 "ml\data\raw\orthodontic_plaque\v3\nested\part-2-inner-listing.slt"
+ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.dataset --config "ml\configs\orthodontic_plaque_v3.toml" summarize-inner-listing part-2 --listing-file "ml\data\raw\orthodontic_plaque\v3\nested\part-2-inner-listing.slt" --format 7z-slt
 ```
 
 Their member names, directory structure, metadata files, patient IDs, extension
 counts, and image-label pairing gaps must be reviewed before any inner
 extraction command is approved. The current tooling intentionally does not
 automate inner extraction.
-
-Before trusting extracted files, run an official 7-Zip integrity test:
-
-```powershell
-& "C:\Program Files\7-Zip\7z.exe" t "ml\data\raw\orthodontic_plaque\v3\nested\A new multi-modal dataset for Dental Plaque Diagno\mendeley-dataset-materials_Part_1.7z"
-```
 
 ## Recovery
 
@@ -134,7 +128,7 @@ Before trusting extracted files, run an official 7-Zip integrity test:
 
 The acquisition configuration, hashing, finalization, ZIP inspection, bounded
 extraction, inner-listing summarization, and CLI behavior are covered by the
-complete ML test suite. The latest focused archive result is 22 passed tests
+complete ML test suite. The latest focused archive result is 29 passed tests
 using a project-local pytest base temp to avoid Windows temp permission issues.
 The platform-independent path-containment tests still pass on this workstation.
 
@@ -156,4 +150,18 @@ Part 1 is not trusted for training. Windows `tar.exe` extraction and official
 `mendeley-dataset-materials_Part_1\data\images\patient0002\patient0002_20251028_bottom-left_rotate-right-15.jpg`.
 The official 7-Zip integrity test reported `ERROR: CRC Failed` for that file.
 Any partial extraction under `ml/data/raw/orthodontic_plaque/v3/extracted/part-1`
-must be treated as unusable. Part 2 has not yet been downloaded.
+must be treated as unusable.
+
+Part 2 has been downloaded from the official Mendeley URL, verified locally
+against SHA-256
+`990691d1c01e8c83be820df22fa38520bc085e3d83efa0a96b09fb8787a49a85`, and
+finalized as `orthodontic_plaque_v3_part_2.zip`. Mendeley's generated ZIP uses
+the same wrapper directory pattern as Part 1:
+`A new multi-modal dataset for Dental Plaque Diagno/mendeley-dataset-materials_Part_2.7z`.
+The Part 2 outer ZIP has been inspected and extracted. Official 7-Zip 26.02
+reported `Everything is Ok` for the nested Part 2 7z. A raw `7z l -slt`
+technical listing was saved as `part-2-inner-listing.slt` and summarized by the
+project CLI with `--format 7z-slt`. The summary contains 10,885 entries, 158
+directories, 10,727 files, 5,174 `.jpg` images, 5,174 `.txt` labels, 74 image
+patients, 74 label patients, no image-label pairing gaps, and no patient ID
+casing conflicts.
