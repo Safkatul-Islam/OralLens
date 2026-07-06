@@ -2,12 +2,13 @@
 
 ## Status
 
-Candidate dataset selected. Part 1 has been downloaded from the official
-Mendeley URL, verified by SHA-256, finalized locally, outer-extracted, and
-listed read-only at the nested 7z layer. Official 7-Zip integrity testing fails
-inside the Part 1 7z payload, so Part 1 is not trusted for training. This card
-records verified publisher metadata, the integrity blocker, and the controls
-required before training.
+Candidate dataset selected. Both official Mendeley generated ZIP downloads have
+been downloaded, verified by SHA-256, finalized locally, and outer-extracted.
+Official 7-Zip integrity testing fails inside the Part 1 7z payload, so Part 1
+is not trusted for training. Part 2 passes official 7-Zip integrity testing and
+its technical listing has been summarized without extraction. This card records
+verified publisher metadata, the integrity blocker, the usable current scope,
+and the controls required before training.
 
 ## Dataset
 
@@ -24,11 +25,11 @@ Verified Version 3 artifacts:
 | Part | Publisher file | Generated ZIP SHA-256 |
 | --- | --- | --- |
 | 1 | `A new multi-modal dataset for Dental Plaque Diagno/mendeley-dataset-materials_Part_1.7z` | `9ab308d919bae0ea6104e9f4c96336be19aa4841c830b8fca1db2f92e3ebe618` |
-| 2 | `mendeley-dataset-materials_Part_2.7z` | `990691d1c01e8c83be820df22fa38520bc085e3d83efa0a96b09fb8787a49a85` |
+| 2 | `A new multi-modal dataset for Dental Plaque Diagno/mendeley-dataset-materials_Part_2.7z` | `990691d1c01e8c83be820df22fa38520bc085e3d83efa0a96b09fb8787a49a85` |
 
 These publisher checksums apply to Mendeley's generated ZIP downloads that
-contain the listed 7z files. The Part 1 path reflects the real member path
-observed after verifying the downloaded ZIP against the official hash.
+contain the listed 7z files. The paths reflect the real member paths observed
+after verifying the downloaded ZIPs against the official hashes.
 
 The publisher reports 148 patients, more than 10,000 intraoral images, nine
 standardized capture angles per patient, and plaque-severity labels reviewed by
@@ -119,8 +120,11 @@ checksum, archive-inspection, and extraction workflow.
   testing, manifest generation, or demos.
 - The Part 1 listing shows a patient ID casing inconsistency that must be
   handled explicitly if a clean replacement artifact becomes available.
-- Part 2 archive layout and detailed metadata schema remain unverified until
-  download.
+- Part 2 is currently the only integrity-verified usable archive. Its listing
+  contains 5,174 images, 5,174 labels, 74 image patients, 74 label patients, no
+  image-label pairing gaps, and no patient ID casing conflicts.
+- Training scope must remain Part 2-only unless Part 1 is replaced by a clean
+  archive or the publisher resolves the CRC failure.
 - The population is clinically narrow.
 - Publisher-generated augmentations may not reflect real-world acquisition shift.
 - Label agreement statistics and subgroup coverage require further audit.
