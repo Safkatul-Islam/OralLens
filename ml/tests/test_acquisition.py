@@ -89,7 +89,7 @@ def test_project_config_matches_reviewed_mendeley_release() -> None:
         "A new multi-modal dataset for Dental Plaque Diagno/mendeley-dataset-materials_Part_1.7z",
     )
     assert artifacts["part-2"].expected_zip_members == (
-        "mendeley-dataset-materials_Part_2.7z",
+        "A new multi-modal dataset for Dental Plaque Diagno/mendeley-dataset-materials_Part_2.7z",
     )
     assert all(
         candidate.download_url.startswith(
