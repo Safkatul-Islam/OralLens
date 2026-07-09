@@ -304,8 +304,8 @@ def _annotation_float(
 
 def _pil_to_float_tensor(image: Image.Image) -> Tensor:
     width, height = image.size
-    data = torch.tensor(list(image.getdata()), dtype=torch.float32)
-    return data.view(height, width, 3).permute(2, 0, 1).contiguous().div(255.0)
+    data = torch.frombuffer(bytearray(image.tobytes()), dtype=torch.uint8)
+    return data.view(height, width, 3).permute(2, 0, 1).contiguous().to(torch.float32).div(255.0)
 
 
 def _target_from_sample(sample: _ManifestSample) -> OrthodonticPlaqueTarget:
