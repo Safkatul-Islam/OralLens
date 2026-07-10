@@ -6,9 +6,10 @@ Candidate dataset selected. Both official Mendeley generated ZIP downloads have
 been downloaded, verified by SHA-256, finalized locally, and outer-extracted.
 Official 7-Zip integrity testing fails inside the Part 1 7z payload, so Part 1
 is not trusted for training. Part 2 passes official 7-Zip integrity testing and
-its technical listing has been summarized without extraction. This card records
-verified publisher metadata, the integrity blocker, the usable current scope,
-and the controls required before training.
+its technical listing, source labels, generated manifest, exclusions, and image
+decoding have been audited. This card records verified publisher metadata, the
+integrity blocker, the usable current scope, and the controls required before
+training.
 
 ## Dataset
 
@@ -76,6 +77,37 @@ Required controls:
 - Measure duplicate and metadata conflicts before training.
 - Report patient-level confidence intervals during final evaluation.
 
+## Current Usable Manifest
+
+The current training scope is Part 2 only. Part 1 remains excluded because its
+nested 7z fails integrity testing.
+
+Generated files:
+
+- `ml/data/prepared/orthodontic_plaque/v3/part-2/manifest.csv`
+- `ml/data/prepared/orthodontic_plaque/v3/part-2/exclusions.csv`
+
+Part 2 generated manifest summary:
+
+| Metric | Count |
+| --- | ---: |
+| Source CSV rows | 5,174 |
+| Included samples | 5,160 |
+| Excluded samples | 14 |
+| Retained valid annotations | 65,238 |
+| Filtered invalid annotations | 42 |
+| Train samples | 3,834 |
+| Validation samples | 468 |
+| Test samples | 858 |
+
+The exclusion policy filters invalid annotation rows and excludes samples that
+have no valid annotations after filtering. It does not clamp, repair, or infer
+bounding boxes. Current exclusion reasons are 14 empty label files and 42
+non-positive bounding-box rows.
+
+All 5,160 retained images decode successfully with Pillow. All retained images
+are RGB; 4,914 images are `6240x4160` and 246 images are `2560x1920`.
+
 ## Normalized Manifest Contract
 
 Raw publisher metadata will be adapted into a UTF-8 CSV manifest. Paths use `/`
@@ -106,7 +138,7 @@ must never be inferred silently when the publisher metadata is ambiguous.
 - One source image never crosses patients or labels.
 - Every patient and source family belongs to exactly one split.
 - Class and patient distributions are reviewed before selecting metrics or loss.
-- Corrupt and unreadable images are identified once image decoding is added.
+- Corrupt and unreadable images are identified before training.
 
 See [`DATA_ACQUISITION.md`](DATA_ACQUISITION.md) for the reviewed download,
 checksum, archive-inspection, and extraction workflow.
@@ -123,6 +155,8 @@ checksum, archive-inspection, and extraction workflow.
 - Part 2 is currently the only integrity-verified usable archive. Its listing
   contains 5,174 images, 5,174 labels, 74 image patients, 74 label patients, no
   image-label pairing gaps, and no patient ID casing conflicts.
+- The generated Part 2 manifest excludes 14 samples with empty label files and
+  filters 42 invalid annotation rows with non-positive bounding-box sizes.
 - Training scope must remain Part 2-only unless Part 1 is replaced by a clean
   archive or the publisher resolves the CRC failure.
 - The population is clinically narrow.
