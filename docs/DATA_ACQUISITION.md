@@ -38,6 +38,15 @@ ml/data/raw/orthodontic_plaque/v3/
 
 The entire `ml/data/raw/` tree is ignored by git.
 
+Generated Part 2 manifest artifacts are written under the ignored prepared-data
+tree:
+
+```text
+ml/data/prepared/orthodontic_plaque/v3/part-2/
+  manifest.csv
+  exclusions.csv
+```
+
 ## Security Gates
 
 1. Download only the HTTPS URLs in the reviewed TOML configuration.
@@ -55,6 +64,10 @@ The entire `ml/data/raw/` tree is ignored by git.
    duplicate member names, extension counts, patient coverage, image-label
    pairing gaps, and patient ID casing inconsistencies.
 10. Test each nested 7z with official 7-Zip before trusting extracted files.
+11. Build generated manifests only through the project CLI. Invalid annotation
+    rows are filtered, samples with no valid annotations are excluded, and the
+    exclusion report is preserved. Bounding boxes are never silently repaired.
+12. Decode every retained image with Pillow before training.
 
 ## Resumable Downloads
 
@@ -113,6 +126,45 @@ counts, and image-label pairing gaps must be reviewed before any inner
 extraction command is approved. The current tooling intentionally does not
 automate inner extraction.
 
+## Part 2 Manifest Generation
+
+After Part 2 passes archive and source audits, generate the retained manifest
+and exclusion report:
+
+```powershell
+ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.dataset --config "ml\configs\orthodontic_plaque_v3.toml" build-orthodontic-plaque-manifest part-2 --dataset-root "ml\data\raw\orthodontic_plaque\v3\extracted\part-2\mendeley-dataset-materials_Part_2" --manifest-output "ml\data\prepared\orthodontic_plaque\v3\part-2\manifest.csv" --exclusions-output "ml\data\prepared\orthodontic_plaque\v3\part-2\exclusions.csv"
+```
+
+Current generated Part 2 output:
+
+| Metric | Count |
+| --- | ---: |
+| Source CSV rows | 5,174 |
+| Included samples | 5,160 |
+| Excluded samples | 14 |
+| Retained valid annotations | 65,238 |
+| Filtered invalid annotations | 42 |
+| Train samples | 3,834 |
+| Validation samples | 468 |
+| Test samples | 858 |
+
+Exclusion reasons:
+
+| Reason | Count |
+| --- | ---: |
+| Empty label file | 14 |
+| Non-positive bounding-box size | 42 |
+
+Validate retained images before modeling:
+
+```powershell
+ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.dataset --config "ml\configs\orthodontic_plaque_v3.toml" validate-orthodontic-plaque-images part-2 --dataset-root "ml\data\raw\orthodontic_plaque\v3\extracted\part-2\mendeley-dataset-materials_Part_2" --manifest "ml\data\prepared\orthodontic_plaque\v3\part-2\manifest.csv"
+```
+
+Current image validation result: all 5,160 retained images decode successfully
+with Pillow. All retained images are RGB. Image sizes are 4,914 at `6240x4160`
+and 246 at `2560x1920`.
+
 ## Recovery
 
 - Interrupted download: retain the `.part` file and rerun the same curl command.
@@ -127,9 +179,10 @@ automate inner extraction.
 ## Implementation Verification
 
 The acquisition configuration, hashing, finalization, ZIP inspection, bounded
-extraction, inner-listing summarization, and CLI behavior are covered by the
-complete ML test suite. The latest focused archive result is 29 passed tests
-using a project-local pytest base temp to avoid Windows temp permission issues.
+extraction, inner-listing summarization, source audit, manifest generation,
+image validation, and CLI behavior are covered by the complete ML test suite.
+The latest complete ML suite result is 82 passed tests and 1 skipped
+Windows-symlink-permission test using a project-local pytest base temp.
 The platform-independent path-containment tests still pass on this workstation.
 
 Part 1 has been downloaded from the official Mendeley URL, verified locally
