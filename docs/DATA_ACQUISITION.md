@@ -180,10 +180,17 @@ and 246 at `2560x1920`.
 
 The acquisition configuration, hashing, finalization, ZIP inspection, bounded
 extraction, inner-listing summarization, source audit, manifest generation,
-image validation, and CLI behavior are covered by the complete ML test suite.
-The latest complete ML suite result is 82 passed tests and 1 skipped
-Windows-symlink-permission test using a project-local pytest base temp.
-The platform-independent path-containment tests still pass on this workstation.
+image validation, PyTorch manifest loader, shared detector checkpoint handling,
+training, evaluation, inference, and CLI behavior are covered by the complete
+ML test suite. The latest complete ML suite result is 127 passed tests
+and 1 skipped Windows-symlink-permission test using a project-local pytest base
+temp. The platform-independent path-containment tests still pass on this
+workstation.
+
+The real generated Part 2 manifest has also passed a loader smoke check against
+the extracted dataset. The check loaded one image from each of the train,
+validation, and test splits and converted each sample into `[3, H, W]`
+`torch.float32` image tensors with normalized box targets.
 
 Part 1 has been downloaded from the official Mendeley URL, verified locally
 against SHA-256
