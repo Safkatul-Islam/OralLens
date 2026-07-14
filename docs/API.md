@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The backend provides a stable HTTP contract between the frontend and the oral-image screening pipeline. The current inference response is deterministic mock data until a trained model is integrated.
+The backend provides a stable HTTP contract between the frontend and the oral-image screening pipeline. The current adapter returns deterministic mock data behind the same response shape planned for the trained detector.
 
 Default local base URL:
 
@@ -24,9 +24,10 @@ The value must contain 1-128 letters, numbers, dots, underscores, or hyphens. In
 
 ## CORS
 
-CORS uses an explicit allowlist. The default development origin is:
+CORS uses an explicit allowlist. The default development origins are:
 
 ```text
+http://127.0.0.1:5173
 http://localhost:5173
 ```
 
@@ -56,11 +57,14 @@ Returns service status, version, and environment.
 
 Accepts one multipart field named `file`.
 
-Accepted formats:
+Accepted formats in default mock mode:
 
 - JPEG: `.jpg` or `.jpeg`
 - PNG: `.png`
 - WebP: `.webp`
+
+ML mode currently supports JPEG and PNG. WebP receives HTTP 415 in ML mode until
+the model-backed image loader supports it.
 
 Validation checks:
 
@@ -70,7 +74,36 @@ Validation checks:
 - Configured maximum upload size
 - Non-empty content
 
-Successful response: HTTP 201 with scan metadata, mock prediction, evidence summary, and responsible-AI report.
+Successful response: HTTP 201 with scan metadata, prediction metadata, optional detection boxes, evidence summary, and responsible-AI report.
+
+Prediction shape:
+
+```json
+{
+  "label": "possible_tartar_buildup",
+  "display_name": "Possible tartar buildup",
+  "confidence": 0.73,
+  "severity": "medium",
+  "is_mock": true,
+  "model_name": "deterministic-mock-v1",
+  "prediction_count": 0,
+  "detections": []
+}
+```
+
+Model-backed detection entries use:
+
+```json
+{
+  "box_xyxy": [1.0, 2.0, 5.0, 6.0],
+  "label": 1,
+  "score": 0.42
+}
+```
+
+The active backend adapter is still mock inference, so it returns an empty
+`detections` array. The ML MVP checkpoint already writes the same detection
+fields in its prediction JSON artifact.
 
 Possible errors:
 
@@ -80,7 +113,10 @@ Possible errors:
 - `422`: missing or structurally invalid request
 - `500`: unexpected internal error with safe public message
 
-Raw uploaded image bytes are not persisted. The local store contains metadata and a SHA-256 hash.
+Raw uploaded image bytes are not persisted. The local store contains metadata and
+a SHA-256 hash. ML mode uses a controlled temporary image file during inference
+and deletes it after the adapter returns.
+Clients cannot provide model paths or checkpoint paths.
 
 ### `GET /scans`
 
@@ -97,12 +133,27 @@ Settings use the `ORALLENS_` environment prefix.
 ```text
 ORALLENS_ENVIRONMENT=local
 ORALLENS_LOG_LEVEL=INFO
+ORALLENS_INFERENCE_MODE=mock
 ORALLENS_MAX_UPLOAD_BYTES=5242880
-ORALLENS_CORS_ALLOWED_ORIGINS=["http://localhost:5173"]
+ORALLENS_CORS_ALLOWED_ORIGINS=["http://127.0.0.1:5173","http://localhost:5173"]
 ORALLENS_CORS_ALLOW_CREDENTIALS=false
+ORALLENS_ML_SOURCE_PATH=../ml/src
+ORALLENS_ML_DETECTION_CONFIG_PATH=../ml/configs/orthodontic_plaque_detection_mvp_predict.toml
+ORALLENS_ML_TEMP_DIR=var/ml-inputs
+```
+
+`ORALLENS_INFERENCE_MODE=ml` enables the optional local MVP detector adapter.
+The backend still owns upload validation and temp-file placement; clients cannot
+choose model paths, checkpoint paths, or prediction output directories.
+
+The optional backend-to-ML smoke is skipped by default and must be enabled
+explicitly from the repository root:
+
+```powershell
+$env:ORALLENS_RUN_ML_INTEGRATION = "1"
+ml\.venv\Scripts\python.exe -m pytest backend\tests\test_ml_integration_smoke.py --basetemp "ml\.uv-cache\pytest-backend-ml" -p no:cacheprovider
 ```
 
 ## Logging Safety
 
 Application logs are emitted as JSON. Request logs include method, URL path, status code, duration, and request ID. Request bodies, uploaded image bytes, authorization values, cookies, and query strings are not logged.
-
