@@ -16,12 +16,21 @@ class ErrorResponse(BaseModel):
     request_id: str
 
 
+class DetectionBoxResponse(BaseModel):
+    box_xyxy: tuple[float, float, float, float]
+    label: int = Field(ge=1)
+    score: float = Field(ge=0.0, le=1.0)
+
+
 class PredictionResponse(BaseModel):
     label: str
     display_name: str
     confidence: float = Field(ge=0.0, le=1.0)
     severity: str
     is_mock: bool
+    model_name: str
+    prediction_count: int = Field(ge=0)
+    detections: list[DetectionBoxResponse] = Field(default_factory=list)
 
 
 class EvidenceResponse(BaseModel):
