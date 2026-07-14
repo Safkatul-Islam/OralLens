@@ -7,9 +7,23 @@ from app.config import Settings
 from app.error_handlers import register_error_handlers
 from app.logging_config import configure_logging
 from app.middleware import request_context_middleware
-from app.pipeline.inference import MockInferencePipeline
+from app.pipeline.inference import (
+    InferencePipeline,
+    MLDetectionInferencePipeline,
+    MockInferencePipeline,
+)
 from app.services.scan_service import ScanService
 from app.storage import JSONScanStore
+
+
+def _build_inference_pipeline(settings: Settings) -> InferencePipeline:
+    if settings.inference_mode == "ml":
+        return MLDetectionInferencePipeline(
+            config_path=settings.ml_detection_config_path,
+            ml_source_path=settings.ml_source_path,
+            temp_dir=settings.ml_temp_dir,
+        )
+    return MockInferencePipeline()
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -17,7 +31,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     resolved_settings = settings or Settings()
     configure_logging(resolved_settings.log_level)
     store = JSONScanStore(resolved_settings.storage_path)
-    pipeline = MockInferencePipeline()
+    pipeline = _build_inference_pipeline(resolved_settings)
     scan_service = ScanService(
         settings=resolved_settings,
         store=store,
