@@ -8,10 +8,23 @@ def png_bytes(extra_bytes: int = 32) -> bytes:
     return b"\x89PNG\r\n\x1a\n" + (b"0" * extra_bytes)
 
 
+def webp_bytes(extra_bytes: int = 32) -> bytes:
+    return b"RIFF" + (extra_bytes + 4).to_bytes(4, "little") + b"WEBP" + (b"0" * extra_bytes)
+
+
 def make_client(tmp_path, max_upload_bytes: int = 5 * 1024 * 1024) -> TestClient:
     settings = Settings(
         max_upload_bytes=max_upload_bytes,
         storage_path=tmp_path / "scans.json",
+    )
+    return TestClient(create_app(settings))
+
+
+def make_ml_client(tmp_path) -> TestClient:
+    settings = Settings(
+        inference_mode="ml",
+        storage_path=tmp_path / "scans.json",
+        ml_temp_dir=tmp_path / "ml-inputs",
     )
     return TestClient(create_app(settings))
 
@@ -32,7 +45,53 @@ def test_create_scan_accepts_valid_png_upload(tmp_path):
     assert payload["size_bytes"] == len(png_bytes())
     assert len(payload["sha256"]) == 64
     assert payload["prediction"]["is_mock"] is True
+    assert payload["prediction"]["model_name"] == "deterministic-mock-v1"
+    assert payload["prediction"]["prediction_count"] == 0
+    assert payload["prediction"]["detections"] == []
     assert payload["report"]["disclaimer"]
+
+
+def test_create_scan_allows_configured_loopback_origin(tmp_path):
+    client = make_client(tmp_path)
+
+    response = client.post(
+        "/scans",
+        headers={"Origin": "http://127.0.0.1:5173"},
+        files={"file": ("mouth.png", png_bytes(), "image/png")},
+    )
+
+    assert response.status_code == 201
+    assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:5173"
+
+
+def test_scans_preflight_allows_configured_loopback_origin(tmp_path):
+    client = make_client(tmp_path)
+
+    response = client.options(
+        "/scans",
+        headers={
+            "Origin": "http://127.0.0.1:5173",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:5173"
+    assert "POST" in response.headers["access-control-allow-methods"]
+
+
+def test_create_scan_does_not_allow_unconfigured_origin(tmp_path):
+    client = make_client(tmp_path)
+
+    response = client.post(
+        "/scans",
+        headers={"Origin": "https://untrusted.example"},
+        files={"file": ("mouth.png", png_bytes(), "image/png")},
+    )
+
+    assert response.status_code == 201
+    assert "access-control-allow-origin" not in response.headers
 
 
 def test_create_scan_rejects_unsupported_content_type(tmp_path):
@@ -71,6 +130,18 @@ def test_create_scan_rejects_mismatched_file_signature(tmp_path):
     assert "does not match" in response.json()["detail"]
 
 
+def test_create_scan_in_ml_mode_rejects_webp_until_ml_supports_it(tmp_path):
+    client = make_ml_client(tmp_path)
+
+    response = client.post(
+        "/scans",
+        files={"file": ("mouth.webp", webp_bytes(), "image/webp")},
+    )
+
+    assert response.status_code == 415
+    assert "JPEG and PNG" in response.json()["detail"]
+
+
 def test_scan_history_and_detail_are_persisted(tmp_path):
     client = make_client(tmp_path)
     first = client.post(
@@ -101,4 +172,3 @@ def test_get_scan_returns_404_for_unknown_id(tmp_path):
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Scan not found."
-
