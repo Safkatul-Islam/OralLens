@@ -6,7 +6,11 @@ from uuid import uuid4
 from fastapi import UploadFile, status
 
 from app.config import Settings
-from app.pipeline.inference import MockInferencePipeline
+from app.pipeline.inference import (
+    InferencePipeline,
+    InferenceResult,
+    UnsupportedInferenceInputError,
+)
 from app.schemas import EvidenceResponse, ReportResponse, ScanRecord
 from app.storage import JSONScanStore
 
@@ -27,7 +31,7 @@ class ScanService:
         self,
         settings: Settings,
         store: JSONScanStore,
-        inference_pipeline: MockInferencePipeline,
+        inference_pipeline: InferencePipeline,
     ) -> None:
         self._settings = settings
         self._store = store
@@ -36,13 +40,16 @@ class ScanService:
     async def create_scan(self, file: UploadFile) -> ScanRecord:
         content = await self._read_and_validate(file)
         digest = hashlib.sha256(content).hexdigest()
-        prediction = self._inference_pipeline.predict(content, file.content_type or "")
+        try:
+            prediction = self._inference_pipeline.predict(content, file.content_type or "")
+        except UnsupportedInferenceInputError as exc:
+            raise UploadValidationError(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, str(exc)) from exc
 
         evidence = EvidenceResponse(
             kind="summary",
             summary=prediction.evidence_summary,
         )
-        report = self._build_report(prediction.display_name, prediction.confidence)
+        report = self._build_report(prediction)
 
         record = ScanRecord(
             id=str(uuid4()),
@@ -124,22 +131,24 @@ class ScanService:
         safe_name = Path(filename or "uploaded-image").name.strip()
         return safe_name or "uploaded-image"
 
-    def _build_report(self, display_name: str, confidence: float) -> ReportResponse:
-        confidence_percent = round(confidence * 100)
+    def _build_report(self, prediction: InferenceResult) -> ReportResponse:
+        confidence_percent = round(prediction.confidence * 100)
+        mode = "mock pipeline" if prediction.is_mock else "model pipeline"
         return ReportResponse(
             title="AI Screening Support Report",
             summary=(
-                f"The current mock model marked this image as '{display_name}' "
-                f"with {confidence_percent}% confidence."
+                f"The current {mode} marked this image as "
+                f"'{prediction.display_name}' with {confidence_percent}% confidence."
             ),
             limitations=[
-                "This backend currently uses deterministic mock inference, not a trained clinical model.",
+                "This backend response is screening-support output, not a diagnosis.",
+                "The current MVP model is not clinically validated.",
                 "Image quality, lighting, angle, and framing can strongly affect screening quality.",
                 "The result is not a dental diagnosis or treatment recommendation.",
             ],
             recommended_next_steps=[
                 "Review the uploaded image and confidence score.",
-                "Use the result only as a portfolio demonstration until the real model is trained.",
+                "Review any returned detection boxes as experimental model evidence.",
                 "Consult a licensed dental professional for real symptoms or concerns.",
             ],
             disclaimer=(
