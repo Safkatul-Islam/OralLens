@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import threading
 from pathlib import Path
@@ -49,4 +51,3 @@ class JSONScanStore:
             encoding="utf-8",
         )
         temp_path.replace(self._path)
-
