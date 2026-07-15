@@ -44,17 +44,19 @@ record version must be rechecked when the data is downloaded.
 
 ## Intended ML Task
 
-Four-class ordinal image classification:
+The current verified Part 2 manifest supports object detection over retained
+image-level label files. Each retained sample contains one or more normalized
+bounding boxes with a foreground plaque/annotation class and tooth-position
+metadata preserved for auditing.
 
-| Internal label | Published severity group |
-| --- | --- |
-| `0-1` | Scores 0 through 1 |
-| `2` | Score 2 |
-| `3` | Score 3 |
-| `4` | Score 4 |
+The first baseline trains a TorchVision Faster R-CNN detector on the verified
+Part 2 manifest. It will not diagnose a disease, recommend treatment, or
+replace assessment by a dental professional.
 
-The first baseline will screen visible plaque severity. It will not diagnose a
-disease, recommend treatment, or replace assessment by a dental professional.
+Publisher `class_id` values are preserved in `annotations_json` for auditability.
+For the v1 binary detector, all retained valid annotations are mapped to
+TorchVision foreground label `1` at training-target conversion time because
+TorchVision reserves label `0` for background.
 
 ## Population and Scope
 
@@ -110,17 +112,20 @@ are RGB; 4,914 images are `6240x4160` and 246 images are `2560x1920`.
 
 ## Normalized Manifest Contract
 
-Raw publisher metadata will be adapted into a UTF-8 CSV manifest. Paths use `/`
-separators and are relative to a separately configured dataset root.
+Raw publisher metadata is adapted into a UTF-8 CSV manifest. Paths use `/`
+separators and are relative to a separately configured dataset root. Bounding
+boxes remain normalized until the training adapter converts them into
+TorchVision pixel-space `[x1, y1, x2, y2]` targets.
 
 | Column | Meaning |
 | --- | --- |
 | `sample_id` | Unique ID for this image record |
 | `patient_id` | Group ID used to prevent patient leakage |
-| `relative_path` | Dataset-root-relative image path |
-| `label` | One of `0-1`, `2`, `3`, or `4` |
-| `source_sample_id` | ID shared by an original image and its variants |
-| `variant` | Transformation name, such as `original` |
+| `split` | Patient-level split: `train`, `validation`, or `test` |
+| `image_relative_path` | Dataset-root-relative image path |
+| `source_csv_line` | Source metadata row used to build the manifest record |
+| `annotation_count` | Number of retained valid annotations for this sample |
+| `annotations_json` | JSON array of normalized boxes, class IDs, tooth IDs, and source label lines |
 
 Extra source metadata may be retained as additional columns. The required fields
 must never be inferred silently when the publisher metadata is ambiguous.
@@ -142,6 +147,9 @@ must never be inferred silently when the publisher metadata is ambiguous.
 
 See [`DATA_ACQUISITION.md`](DATA_ACQUISITION.md) for the reviewed download,
 checksum, archive-inspection, and extraction workflow.
+See [`TRAINING.md`](TRAINING.md) for the baseline detector run contract,
+artifact outputs, verification status, and current evaluation/inference
+limitations.
 
 ## Known Limitations
 
