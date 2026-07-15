@@ -182,15 +182,28 @@ ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.evaluate detection --config "m
 
 Current bounded MVP validation result at IoU `0.5`:
 
-```text
-score_threshold=0.05: precision=0.0278125 recall=0.28164556962025317 f1=0.05062571103526735 tp=178 fp=6222 fn=454
-score_threshold=0.25: precision=0.0 recall=0.0 f1=0.0 tp=0 fp=0 fn=632
-score_threshold=0.5: precision=0.0 recall=0.0 f1=0.0 tp=0 fp=0 fn=632
-```
+| Score threshold | Precision | Recall | F1 | TP | FP | FN | Predictions |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0.050 | 0.0278 | 0.2816 | 0.0506 | 178 | 6222 | 454 | 6400 |
+| 0.075 | 0.0278 | 0.2816 | 0.0506 | 178 | 6222 | 454 | 6400 |
+| 0.100 | 0.0278 | 0.2816 | 0.0506 | 178 | 6222 | 454 | 6400 |
+| 0.125 | 0.0319 | 0.2627 | 0.0569 | 166 | 5041 | 466 | 5207 |
+| **0.150** | **0.0489** | **0.1361** | **0.0720** | **86** | **1671** | **546** | **1757** |
+| 0.175 | 0.0502 | 0.0348 | 0.0411 | 22 | 416 | 610 | 438 |
+| 0.200 | 0.0116 | 0.0016 | 0.0028 | 1 | 85 | 631 | 86 |
+| 0.225 | 0.0000 | 0.0000 | 0.0000 | 0 | 15 | 632 | 15 |
+| 0.250 | 0.0000 | 0.0000 | 0.0000 | 0 | 0 | 632 | 0 |
 
-The low-threshold detections show the pipeline is learning a usable objectness
-signal, but the score calibration is still weak after the intentionally bounded
-run.
+The MVP inference threshold is `0.15` because it produced the highest measured
+validation F1 in this sweep. Compared with `0.05`, it reduced false positives
+and retained predictions by approximately 73%, while increasing precision and
+F1. Recall decreased from approximately 28% to 14%, so this is an MVP operating
+point rather than evidence of a high-quality detector. Raising the threshold to
+`0.175` produced only a small precision gain and reduced recall to approximately
+3%.
+
+These results show that the pipeline is learning a weak objectness signal, but
+the detector remains poorly calibrated after the intentionally bounded run.
 
 Reported fields include IoU threshold, score threshold, true positives, false
 positives, false negatives, precision, recall, F1, prediction count, target
@@ -228,10 +241,13 @@ MVP prediction command:
 ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.predict detection --config "ml\configs\orthodontic_plaque_detection_mvp_predict.toml" --image "ml\data\raw\orthodontic_plaque\v3\extracted\part-2\mendeley-dataset-materials_Part_2\data\images\patient0144\patient0144_20260118_bottom-left.jpg"
 ```
 
-The current MVP prediction completed successfully with `25` predictions at the
-configured `0.05` score threshold. Scores remain low after the intentionally
-bounded run, so these predictions are an integration artifact, not a reliable
-clinical output.
+The current MVP prediction completed successfully with `25` retained
+predictions at the configured `0.15` score threshold. This image still reaches
+the configured 25-detection cap because at least 25 candidate scores exceed the
+threshold. The validation-wide reduction in false positives therefore does not
+guarantee a smaller result on every image. Scores remain low after the
+intentionally bounded run, so these predictions are an integration artifact,
+not a reliable clinical output.
 
 ## Security Controls
 
