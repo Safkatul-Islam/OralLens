@@ -8,6 +8,7 @@ from PIL import Image
 import pytest
 import torch
 
+import orallens_ml.evaluation.detection as detection_evaluation
 from orallens_ml.evaluation.detection import (
     DetectionEvaluationConfig,
     DetectionEvaluationError,
@@ -16,6 +17,7 @@ from orallens_ml.evaluation.detection import (
     run_detection_evaluation,
 )
 from orallens_ml.modeling.detection import save_detection_checkpoint
+from orallens_ml.training.detection import DetectionTrainingError
 
 FIELDNAMES = (
     "sample_id",
@@ -312,6 +314,51 @@ def test_run_detection_evaluation_writes_metrics(tmp_path: Path) -> None:
     assert result.metrics[0].true_positives == 1
     payload = json.loads(result.metrics_path.read_text(encoding="utf-8"))
     assert payload["metrics"][0]["precision"] == 1.0
+
+
+def test_run_detection_evaluation_translates_target_validation_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dataset_root, manifest_path = write_manifest_dataset(tmp_path)
+    checkpoint_path = tmp_path / "checkpoint.pt"
+    save_detection_checkpoint(
+        model=TinyEvalModel(),
+        path=checkpoint_path,
+        config=checkpoint_config(),
+        metrics=[],
+    )
+    config = DetectionEvaluationConfig(
+        dataset_root=dataset_root,
+        manifest_path=manifest_path,
+        checkpoint_path=checkpoint_path,
+        output_dir=tmp_path / "runs",
+        split="validation",
+        batch_size=1,
+        num_workers=0,
+        num_classes=2,
+        image_min_size=64,
+        image_max_size=128,
+        trainable_backbone_layers=0,
+        pretrained_weights="none",
+        device="cpu",
+        iou_thresholds=(0.5,),
+        score_thresholds=(0.5,),
+        max_batches=1,
+    )
+
+    def reject_target(*args: object, **kwargs: object) -> dict[str, torch.Tensor]:
+        raise DetectionTrainingError("invalid normalized target")
+
+    monkeypatch.setattr(detection_evaluation, "make_detection_target", reject_target)
+
+    with pytest.raises(
+        DetectionEvaluationError,
+        match="invalid normalized target",
+    ) as error:
+        run_detection_evaluation(config, model_factory=lambda _: TinyEvalModel())
+
+    assert isinstance(error.value.__cause__, DetectionTrainingError)
 
 
 def test_run_detection_evaluation_rejects_file_output_path(tmp_path: Path) -> None:

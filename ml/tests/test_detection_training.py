@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+from dataclasses import replace
 from pathlib import Path
 
 from PIL import Image
@@ -213,6 +214,90 @@ def test_make_detection_target_converts_normalized_boxes_to_pixels(tmp_path: Pat
     assert detection_target["labels"].tolist() == [1]
     assert detection_target["image_id"].tolist() == [3]
     assert detection_target["iscrowd"].tolist() == [0]
+
+
+def test_make_detection_target_clips_tiny_boundary_crossing(tmp_path: Path) -> None:
+    dataset_root, manifest_path = write_manifest_dataset(tmp_path)
+    from orallens_ml.data.orthodontic_plaque_dataset import OrthodonticPlaquePart2Dataset
+
+    dataset = OrthodonticPlaquePart2Dataset(
+        dataset_root=dataset_root,
+        manifest_path=manifest_path,
+        split="train",
+    )
+    image, target = dataset[0]
+    target = replace(
+        target,
+        boxes=torch.tensor([[0.25, -5e-7, 0.75, 0.5]], dtype=torch.float32),
+    )
+
+    detection_target = make_detection_target(
+        image,
+        target,
+        image_id=1,
+        num_classes=2,
+    )
+
+    assert detection_target["boxes"].tolist() == [[2.0, 0.0, 6.0, 3.0]]
+
+
+def test_make_detection_target_rejects_gross_boundary_crossing(tmp_path: Path) -> None:
+    dataset_root, manifest_path = write_manifest_dataset(tmp_path)
+    from orallens_ml.data.orthodontic_plaque_dataset import OrthodonticPlaquePart2Dataset
+
+    dataset = OrthodonticPlaquePart2Dataset(
+        dataset_root=dataset_root,
+        manifest_path=manifest_path,
+        split="train",
+    )
+    image, target = dataset[0]
+    target = replace(
+        target,
+        boxes=torch.tensor([[-1e-3, 0.25, 0.5, 0.75]], dtype=torch.float32),
+    )
+
+    with pytest.raises(DetectionTrainingError, match="out of range"):
+        make_detection_target(image, target, image_id=1, num_classes=2)
+
+
+def test_make_detection_target_rejects_box_degenerate_after_clipping(
+    tmp_path: Path,
+) -> None:
+    dataset_root, manifest_path = write_manifest_dataset(tmp_path)
+    from orallens_ml.data.orthodontic_plaque_dataset import OrthodonticPlaquePart2Dataset
+
+    dataset = OrthodonticPlaquePart2Dataset(
+        dataset_root=dataset_root,
+        manifest_path=manifest_path,
+        split="train",
+    )
+    image, target = dataset[0]
+    target = replace(
+        target,
+        boxes=torch.tensor([[-5e-7, 0.25, 0.0, 0.75]], dtype=torch.float32),
+    )
+
+    with pytest.raises(DetectionTrainingError, match="invalid extents"):
+        make_detection_target(image, target, image_id=1, num_classes=2)
+
+
+def test_make_detection_target_rejects_non_finite_box(tmp_path: Path) -> None:
+    dataset_root, manifest_path = write_manifest_dataset(tmp_path)
+    from orallens_ml.data.orthodontic_plaque_dataset import OrthodonticPlaquePart2Dataset
+
+    dataset = OrthodonticPlaquePart2Dataset(
+        dataset_root=dataset_root,
+        manifest_path=manifest_path,
+        split="train",
+    )
+    image, target = dataset[0]
+    target = replace(
+        target,
+        boxes=torch.tensor([[0.25, 0.25, float("nan"), 0.75]], dtype=torch.float32),
+    )
+
+    with pytest.raises(DetectionTrainingError, match="non-finite"):
+        make_detection_target(image, target, image_id=1, num_classes=2)
 
 
 def test_make_detection_target_maps_source_class_zero_to_foreground_label(

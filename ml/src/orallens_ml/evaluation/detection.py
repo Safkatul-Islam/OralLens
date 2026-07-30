@@ -23,7 +23,11 @@ from orallens_ml.modeling.detection import (
     load_detection_checkpoint,
     validate_checkpoint_compatibility,
 )
-from orallens_ml.training.detection import collate_detection_batch, make_detection_target
+from orallens_ml.training.detection import (
+    DetectionTrainingError,
+    collate_detection_batch,
+    make_detection_target,
+)
 
 DeviceName = Literal["auto", "cpu", "cuda"]
 SplitName = Literal["train", "validation", "test"]
@@ -211,18 +215,23 @@ def run_detection_evaluation(
             if config.max_batches is not None and batch_index >= config.max_batches:
                 break
             image_batch = [image.to(device) for image in images]
-            target_batch = [
-                {
-                    key: value.to(device)
-                    for key, value in make_detection_target(
-                        image,
-                        target,
-                        image_id=batch_index * config.batch_size + target_index,
-                        num_classes=config.num_classes,
-                    ).items()
-                }
-                for target_index, (image, target) in enumerate(zip(images, raw_targets))
-            ]
+            try:
+                target_batch = [
+                    {
+                        key: value.to(device)
+                        for key, value in make_detection_target(
+                            image,
+                            target,
+                            image_id=batch_index * config.batch_size + target_index,
+                            num_classes=config.num_classes,
+                        ).items()
+                    }
+                    for target_index, (image, target) in enumerate(
+                        zip(images, raw_targets)
+                    )
+                ]
+            except DetectionTrainingError as exc:
+                raise DetectionEvaluationError(str(exc)) from exc
             predictions = model(image_batch)
             if not isinstance(predictions, list):
                 raise DetectionEvaluationError("Model did not return a prediction list")

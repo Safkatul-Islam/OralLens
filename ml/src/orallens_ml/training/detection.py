@@ -15,6 +15,7 @@ from torch import nn
 from torch import Tensor
 from torch.nn import Module
 from torch.utils.data import DataLoader
+from torchvision.ops import clip_boxes_to_image
 
 from orallens_ml.data.orthodontic_plaque_dataset import (
     OrthodonticPlaquePart2Dataset,
@@ -29,6 +30,11 @@ from orallens_ml.modeling.detection import (
 
 DeviceName = Literal["auto", "cpu", "cuda"]
 WeightsName = Literal["none", "default"]
+
+# Prepared annotations use six-decimal normalized coordinates. Rotations can
+# therefore produce derived corners just outside the image by half a rounding
+# unit even when every source center/size value remains valid.
+_NORMALIZED_BOX_BOUNDARY_TOLERANCE = 1e-6
 
 
 class DetectionTrainingError(ValueError):
@@ -142,17 +148,27 @@ def make_detection_target(
         raise DetectionTrainingError(f"Invalid label tensor for sample: {target.sample_id}")
     if boxes.numel() == 0:
         raise DetectionTrainingError(f"Sample has no boxes: {target.sample_id}")
-    if torch.any(boxes < 0.0) or torch.any(boxes > 1.0):
+    normalized_boxes = boxes.to(dtype=torch.float32)
+    if torch.any(~torch.isfinite(normalized_boxes)):
+        raise DetectionTrainingError(
+            f"Normalized boxes contain non-finite values: {target.sample_id}"
+        )
+    if torch.any(normalized_boxes < -_NORMALIZED_BOX_BOUNDARY_TOLERANCE) or torch.any(
+        normalized_boxes > 1.0 + _NORMALIZED_BOX_BOUNDARY_TOLERANCE
+    ):
         raise DetectionTrainingError(f"Normalized boxes are out of range: {target.sample_id}")
-    if torch.any(boxes[:, 0] >= boxes[:, 2]) or torch.any(boxes[:, 1] >= boxes[:, 3]):
+    normalized_boxes = clip_boxes_to_image(normalized_boxes, size=(1, 1))
+    if torch.any(normalized_boxes[:, 0] >= normalized_boxes[:, 2]) or torch.any(
+        normalized_boxes[:, 1] >= normalized_boxes[:, 3]
+    ):
         raise DetectionTrainingError(f"Normalized boxes have invalid extents: {target.sample_id}")
     if num_classes != 2:
-        raise DetectionTrainingError("The v1 plaque detector requires num_classes=2")
+        raise DetectionTrainingError("The plaque detector requires num_classes=2")
     if torch.any(labels < 0):
         raise DetectionTrainingError(f"Source labels are outside configured classes: {target.sample_id}")
 
     scale = torch.tensor([width, height, width, height], dtype=torch.float32)
-    pixel_boxes = boxes.to(dtype=torch.float32) * scale
+    pixel_boxes = normalized_boxes * scale
     area = (pixel_boxes[:, 2] - pixel_boxes[:, 0]) * (
         pixel_boxes[:, 3] - pixel_boxes[:, 1]
     )
