@@ -1,0 +1,15 @@
+[model]
+checkpoint_path = "ml/runs/detection/orthodontic_plaque_part2_smoke/checkpoint_last.pt"
+num_classes = 2
+image_min_size = 256
+image_max_size = 384
+trainable_backbone_layers = 0
+pretrained_weights = "none"
+
+[inference]
+device = "cpu"
+score_threshold = 0.5
+max_detections = 25
+
+[output]
+output_dir = "ml/runs/detection/orthodontic_plaque_part2_smoke_predictions"

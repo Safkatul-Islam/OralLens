@@ -1,0 +1,23 @@
+[data]
+dataset_root = "ml/data/raw/orthodontic_plaque/v3/extracted/part-2/mendeley-dataset-materials_Part_2"
+manifest_path = "ml/data/prepared/orthodontic_plaque/v3/part-2/manifest.csv"
+
+[model]
+checkpoint_path = "ml/runs/detection/orthodontic_plaque_part2_mvp/checkpoint_last.pt"
+num_classes = 2
+image_min_size = 512
+image_max_size = 768
+trainable_backbone_layers = 3
+pretrained_weights = "default"
+
+[evaluation]
+split = "validation"
+batch_size = 1
+num_workers = 0
+device = "auto"
+iou_thresholds = [0.5]
+score_thresholds = [0.05, 0.075, 0.1, 0.125, 0.15, 0.175, 0.2, 0.225, 0.25]
+max_batches = 64
+
+[output]
+output_dir = "ml/runs/detection/orthodontic_plaque_part2_mvp_eval"

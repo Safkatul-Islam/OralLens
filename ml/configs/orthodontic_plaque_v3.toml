@@ -1,0 +1,33 @@
+schema_version = 1
+dataset_id = "orthodontic-plaque-fixed-labial"
+dataset_version = 3
+license = "CC BY 4.0"
+publisher = "Mendeley Data"
+
+[[artifacts]]
+artifact_id = "part-1"
+record_url = "https://data.mendeley.com/datasets/g8yhdvgjy2/3"
+download_url = "https://data.mendeley.com/public-api/zip/g8yhdvgjy2/download/3"
+partial_filename = "orthodontic_plaque_v3_part_1.zip.part"
+final_filename = "orthodontic_plaque_v3_part_1.zip"
+sha256 = "9ab308d919bae0ea6104e9f4c96336be19aa4841c830b8fca1db2f92e3ebe618"
+max_download_bytes = 11000000000
+max_archive_entries = 4
+max_member_bytes = 11000000000
+max_uncompressed_bytes = 11000000000
+max_compression_ratio = 2.0
+expected_zip_members = ["A new multi-modal dataset for Dental Plaque Diagno/mendeley-dataset-materials_Part_1.7z"]
+
+[[artifacts]]
+artifact_id = "part-2"
+record_url = "https://data.mendeley.com/datasets/xjs4bfgzj5/3"
+download_url = "https://data.mendeley.com/public-api/zip/xjs4bfgzj5/download/3"
+partial_filename = "orthodontic_plaque_v3_part_2.zip.part"
+final_filename = "orthodontic_plaque_v3_part_2.zip"
+sha256 = "990691d1c01e8c83be820df22fa38520bc085e3d83efa0a96b09fb8787a49a85"
+max_download_bytes = 11000000000
+max_archive_entries = 4
+max_member_bytes = 11000000000
+max_uncompressed_bytes = 11000000000
+max_compression_ratio = 2.0
+expected_zip_members = ["A new multi-modal dataset for Dental Plaque Diagno/mendeley-dataset-materials_Part_2.7z"]

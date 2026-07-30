@@ -1,0 +1,15 @@
+[model]
+checkpoint_path = "ml/runs/detection/orthodontic_plaque_part2_mvp_v2/checkpoint_last.pt"
+num_classes = 2
+image_min_size = 512
+image_max_size = 768
+trainable_backbone_layers = 3
+pretrained_weights = "default"
+
+[inference]
+device = "auto"
+score_threshold = 0.65
+max_detections = 25
+
+[output]
+output_dir = "ml/runs/detection/orthodontic_plaque_part2_mvp_v2_predictions"
