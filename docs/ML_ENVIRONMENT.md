@@ -1,132 +1,121 @@
-# ML Environment
+# ML Environment and Reproducibility
 
-## Purpose
+## Supported local environment
 
-The OralLens AI ML environment is isolated from the backend environment. It
-provides reproducible image validation, training, evaluation, explainability,
-and testing dependencies without installing packages globally.
+The ML package is configured for Python `>=3.13,<3.14`; the project version file selects Python 3.13. The completed experiments used Python 3.13.5 on Windows with an NVIDIA RTX 4070-class laptop GPU and approximately 8 GB of available GPU memory.
 
-## Supported Python
+The project-local environment is:
 
-The project uses Python 3.13 and declares `>=3.13,<3.14`. This narrow range
-prevents an environment from silently moving to a newer Python minor release
-before the ML dependency stack has been verified against it.
+`ml/.venv`
 
-The local interpreter selected during the feasibility pass is:
+Do not install ML packages globally.
 
-```text
-C:\Python313\python.exe
-```
+## Declared dependencies
 
-uv commands use `--no-python-downloads` so environment creation cannot download
-or select a different interpreter without review.
+`ml/pyproject.toml` is the dependency source of truth.
 
-## Direct Dependencies
+| Group | Packages | Purpose |
+|---|---|---|
+| base | Pillow 12.2.0 | image decoding and validation |
+| dev | pytest 9.1.1 | automated tests |
+| training | PyTorch 2.12.1, TorchVision 0.27.1 | detector training, evaluation, box operations, and inference |
 
-| Group | Package | Version | Direct purpose |
-| --- | --- | --- | --- |
-| Base | Pillow | 12.2.0 | Decode and validate image content |
-| Training | PyTorch | 2.12.1 | Model training and tensor computation |
-| Training | TorchVision | 0.27.1 | ResNet18, image transforms, and vision utilities |
-| Training | Captum | 0.9.0 | Maintained model-explainability algorithms |
-| Training | scikit-learn | 1.9.0 | Evaluation metrics and grouped data utilities |
-| Development | Pytest | 9.1.1 | Automated test execution |
+PyTorch and TorchVision are resolved from the official PyTorch CUDA 12.6 package index on Windows/Linux. The lockfile and project-local environment should be treated as the reproducible installation boundary.
 
-Only packages imported directly by project code or its test suite are declared
-as direct dependencies. Transitive dependencies are selected and recorded by
-uv in `uv.lock`; they must not be copied into `pyproject.toml` without a direct
-project use.
+## Create or synchronize the environment
 
-## Package Sources
-
-General dependencies resolve from the default Python Package Index. PyTorch and
-TorchVision resolve from the official PyTorch CUDA 12.6 wheel index on Windows
-and Linux.
-
-The PyTorch index is configured with `explicit = true`. This prevents unrelated
-packages from being resolved from that secondary index and limits dependency
-confusion risk. macOS falls back to the CPU packages published on PyPI because
-PyTorch does not publish CUDA builds for macOS.
-
-## Verified Official Metadata
-
-The dependency versions and Python constraints were checked on June 23, 2026:
-
-- [PyTorch on PyPI](https://pypi.org/project/torch/)
-- [TorchVision on PyPI](https://pypi.org/project/torchvision/)
-- [Captum on PyPI](https://pypi.org/project/captum/)
-- [scikit-learn on PyPI](https://pypi.org/project/scikit-learn/)
-- [Pillow on PyPI](https://pypi.org/project/Pillow/)
-- [Pytest on PyPI](https://pypi.org/project/pytest/)
-- [Official PyTorch installation selector](https://pytorch.org/get-started/locally/)
-- [Official uv PyTorch integration guide](https://docs.astral.sh/uv/guides/integration/pytorch/)
-
-The visible TorchVision compatibility table had not yet been updated for the
-new PyTorch 2.12.1 and TorchVision 0.27.1 releases. Their pairing is therefore
-not accepted based on matching release dates. Successful uv resolution against
-the published wheel metadata is a required gate before installation.
-
-## Reproducible Workflow
-
-Run these commands from the repository root after each command is reviewed and
-approved:
+With `uv` available, run from the repository root:
 
 ```powershell
-uv lock --project ml --python C:\Python313\python.exe --no-python-downloads --cache-dir ml\.uv-cache
-uv sync --project ml --group training --python C:\Python313\python.exe --no-python-downloads --cache-dir ml\.uv-cache --locked
-uv run --project ml --group training python -m pytest
+Push-Location ml
+uv sync --group dev --group training
+Pop-Location
 ```
 
-The lockfile is source-controlled. The project-local `.venv` and `.uv-cache`
-directories are generated and ignored.
+This should create or update `ml/.venv`. Review dependency changes before accepting lockfile modifications.
 
-## Verification Gates
+## Verify the runtime
 
-An environment is accepted only when all of the following succeed:
+```powershell
+ml\.venv\Scripts\python.exe --version
+ml\.venv\Scripts\python.exe -c "import torch, torchvision; print(torch.__version__); print(torchvision.__version__); print(torch.cuda.is_available())"
+nvidia-smi
+```
 
-- uv resolves the exact direct versions without overriding constraints.
-- `uv sync --locked` completes without source builds or global installation.
-- Package imports report the expected versions.
-- Existing ML tests pass inside the ML environment.
-- PyTorch reports CUDA available on the training workstation.
-- A small tensor operation executes on the GPU.
+GPU execution is selected by `device = "auto"` when CUDA is available. CPU execution remains possible but is slower.
 
-## Verified Environment
+## Official pretrained weights
 
-Verification completed on June 23, 2026:
+The detector initializes from official TorchVision Faster R-CNN ResNet-50 FPN weights. TorchVision may populate the normal user cache on first acquisition. A cached official checkpoint outside the repository may be used read-only when explicitly approved; it must not be copied into source control.
 
-- Python: 3.13.5
-- Locked dependency graph: 56 packages
-- Installed environment: 35 packages
-- PyTorch: 2.12.1+cu126
-- TorchVision: 0.27.1+cu126
-- Captum: 0.9.0
-- scikit-learn: 1.9.0
-- Pillow: 12.2.0
-- Pytest: 9.1.1
-- CUDA available: yes
-- GPU: NVIDIA GeForce RTX 4070 Laptop GPU
-- CUDA tensor verification: passed with expected result `14.0`
-- Automated tests: 45 passed, 1 capability-gated skip
+Trained project checkpoints are written under ignored `ml/runs` paths and loaded as state dictionaries with `weights_only=True`.
 
-The skipped test requires Windows permission to create symbolic links. A
-platform-independent path-escape test passed, so dataset-root containment
-remains covered on this workstation.
+## Common commands
 
-## Update Policy
+Run from the repository root.
 
-Dependency updates are deliberate maintenance work, not automatic upgrades. For
-each update:
+Training:
 
-1. Recheck official release metadata and Python compatibility.
-2. Review security and breaking-change notices.
-3. Update direct pins intentionally.
-4. Regenerate and review `uv.lock`.
-5. Run the full ML test and CUDA verification suite.
-6. Record the decision and remaining limitations.
+```powershell
+ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.train detection-baseline --config "ml\configs\orthodontic_plaque_detection_mvp_v2.toml"
+```
 
-## Known Boundary
+Validation sweep:
 
-The existing setuptools build backend declaration remains unchanged in this
-block. Build-tool pinning must be reviewed before publishing the ML package as a
-distribution. It does not block the current project-local editable workflow.
+```powershell
+ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.evaluate detection --config "ml\configs\orthodontic_plaque_detection_mvp_v2_eval.toml"
+```
+
+Frozen held-out test:
+
+```powershell
+ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.evaluate detection --config "ml\configs\orthodontic_plaque_detection_mvp_v2_test.toml"
+```
+
+Prediction:
+
+```powershell
+ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.predict detection --config "ml\configs\orthodontic_plaque_detection_mvp_v2_predict.toml" --image "C:\path\to\image.jpg"
+```
+
+Test suite:
+
+```powershell
+ml\.venv\Scripts\python.exe -B -m pytest ml\tests
+```
+
+## Generated artifacts
+
+The following are local, reproducible evidence rather than repository source:
+
+- raw and prepared datasets under `ml/data`
+- trained checkpoints and loss metrics under `ml/runs/detection/...`
+- validation and held-out evaluation metrics
+- prediction JSON output
+- package caches such as `ml/.uv-cache`
+
+They are excluded by the root `.gitignore`. Do not commit data, checkpoints, run output, or temporary test artifacts.
+
+## Verification baseline
+
+Latest completed checks:
+
+- ML suite: `132 passed, 1 skipped`
+- v2 training: completed
+- complete validation threshold sweep: completed
+- frozen held-out test: completed
+- representative v2 prediction: completed
+- real backend-to-ML smoke: `1 passed`
+
+The Windows skip is limited to symbolic-link creation permissions.
+
+## Reproducibility notes
+
+- configs use repository-root-relative data and output paths
+- v2 training seed is `20260711`
+- workers are fixed at zero for the current Windows/GPU experiment
+- the threshold is selected on validation and frozen for test/inference
+- checkpoint, config, dataset version, and metrics artifact must be reported together
+- exact GPU kernels can remain nondeterministic unless deterministic algorithms are explicitly enabled and validated
+
+See [Training and evaluation](TRAINING.md), [Dataset card](DATASET_CARD.md), and [ML guide](../ml/README.md).

@@ -1,172 +1,86 @@
-# Learning Log
+# Engineering Learning Log
 
-This file will track what is learned while building OralLens AI. The goal is to understand the system, not blindly copy code.
+This log records the major decisions and lessons behind the current OralLens AI MVP. It is intentionally concise; detailed contracts and metrics live in their dedicated documents.
 
-## How To Use This Log
+## 1. Start with an honest product boundary
 
-For each build phase, record:
+The initial goal was narrowed from broad oral-health detection to experimental screening support. The language, schemas, UI, and reports consistently avoid diagnosis, treatment, clinical-validation, and medical-device claims.
 
-- What was built
-- Why it matters
-- New concepts learned
-- Mistakes or blockers
-- How the issue was solved
-- Resume-ready takeaway
+**Lesson:** responsible AI starts with the intended-use boundary, not a disclaimer added after implementation.
 
-## Phase 1: Project Design
+## 2. Build a thin end-to-end vertical slice
 
-### What We Are Building
+The first usable architecture separated FastAPI routes, schemas, services, storage, and an inference protocol. A deterministic mock adapter enabled API and frontend development before a trained checkpoint was ready.
 
-An end-to-end AI/ML application that screens oral images and returns explainable model results through a web interface.
+**Lesson:** a stable inference contract lets product engineering proceed without coupling routes to one model implementation.
 
-### Why It Matters
+## 3. Treat uploads and local paths as trust boundaries
 
-Hiring managers want to see that a candidate can connect ML work to a usable product. A model alone is not enough. A strong project shows data handling, evaluation, serving, UI, documentation, and responsible use.
+Upload handling added bounded reads, MIME/extension/magic-byte checks, safe display filenames, hashing, explicit CORS, structured errors, and constrained ML temporary paths. Dataset code separately validates manifest paths, containment, missing files, and symlinks.
 
-### Concepts
+**Lesson:** ML applications inherit normal application-security risks plus model/data-specific filesystem risks.
 
-- End-to-end ML project: a project that covers data, model, API, UI, and deployment thinking.
-- Computer vision: machine learning applied to images.
-- Inference: using a trained model to make a prediction on new input.
-- Confidence score: the model's estimated certainty for a prediction.
-- Explainability: tools or outputs that help humans understand why a model produced a result.
-- Responsible AI: building AI systems with clear limitations, safety boundaries, and honest claims.
+## 4. Admit data deliberately
 
-### Current Status
+Only the verified Part 2 orthodontic-plaque material entered the workflow. Part 1 was excluded after its nested archive failed official integrity validation. Patient-aware split assignments were created before final evaluation.
 
-The project concept and initial documentation structure have been created.
+**Lesson:** more data is not automatically better when integrity, license, label meaning, or leakage controls are uncertain.
 
-## Phase 2: Repository Structure
+## 5. Make the baseline small but complete
 
-Planned learning goals:
+The v1 Faster R-CNN run exercised preparation, loading, training, validation, threshold selection, checkpointing, prediction, and tests. Its F1 was weak, but it provided a reproducible baseline and exposed false-positive behavior.
 
-- Understand how production projects separate frontend, backend, ML, and documentation.
-- Learn why clear folder structure helps recruiters, collaborators, and future maintainers.
+**Lesson:** a bounded baseline is valuable when it tests the whole scientific and software pipeline and its limitations are reported honestly.
 
-## Phase 3: Backend API
+## 6. Improve evidence without using the test split for decisions
 
-Planned learning goals:
+The v2 run increased the bounded training work to three epochs and 512 batches per epoch. Loss decreased across all epochs. A complete validation sweep—not the held-out test—selected threshold `0.65`.
 
-- Learn what an API is.
-- Learn how a frontend sends an image to a backend.
-- Learn request validation, error handling, and response schemas.
-- Learn how tests protect backend behavior.
+**Lesson:** the test split is a measurement boundary. Threshold and model decisions belong to training/validation evidence.
 
-## Phase 4: ML Baseline
+## 7. Diagnose data-contract failures before modifying data
 
-Planned learning goals:
+The first held-out run failed on a rotated sample whose center/size values were individually normalized but whose derived corners crossed the boundary. A structured full-manifest audit found only two annotations in one test image, with a maximum crossing near `5e-7` and no post-clipping degeneration.
 
-- Learn dataset splits.
-- Learn image preprocessing.
-- Train or wire a baseline model.
-- Understand accuracy, precision, recall, F1, and confusion matrix.
+The fix introduced a documented `1e-6` tolerance, explicit TorchVision clipping, positive-area revalidation, and rejection of gross violations. It also translated shared target errors into evaluation-domain errors so the CLI no longer exposed a raw traceback for expected validation failures.
 
-### Data Foundation
+**Lesson:** do not clamp, skip, or delete a failing sample until the scope and cause are measured. The fix belongs at the shared target boundary and must preserve strict validation.
 
-Before training, the project defines a normalized manifest instead of coupling
-model code directly to an external archive layout. This creates a stable boundary
-between publisher-specific metadata and the rest of the ML system.
+## 8. Freeze the operating point and measure held-out performance once
 
-Key lessons:
+At threshold `0.65` and IoU `0.5`, complete validation F1 was `0.7583`. The frozen held-out test then achieved precision `0.7582`, recall `0.7037`, F1 `0.7299`, and mean matched IoU `0.7541`.
 
-- A manifest makes sample identity, patient grouping, labels, source images, and
-  augmentations explicit and reviewable.
-- Input validation matters in offline ML pipelines too. Unsafe paths, missing
-  files, conflicting metadata, and duplicate records can invalidate an experiment.
-- Image-level random splitting is unsafe when multiple views or augmentations come
-  from one patient. All records for a patient must remain in one split.
-- Reproducibility requires stable split logic. Python's process-randomized hash is
-  unsuitable, so the splitter orders patient IDs with a seeded SHA-256 digest.
-- A deterministic split is not automatically a balanced split. Class and patient
-  distributions must be audited before deciding whether grouped stratification is
-  required.
+**Lesson:** a lower held-out result is information, not permission to tune on the test set.
 
-Current status: manifest, audit, and grouped-split code has been added. Automated
-verification completed with 19 passing tests and one capability-gated skip. The
-skipped test covers symbolic-link escape on Windows, where this account lacks
-permission to create symbolic links; a platform-independent path traversal test
-still verifies dataset-root containment.
+## 9. Promote models through configuration boundaries
 
-### Reproducible ML Environment
+The backend was moved from v1 to v2 through its typed config and startup scripts. Route and service contracts did not change. A real integration smoke, backend suite, ML suite, frontend build, and manual browser scan verified the promotion.
 
-The ML environment is intentionally separate from the backend environment. A
-web API and a model-training workstation have different dependency sizes,
-hardware needs, and deployment risks, so sharing one environment would create
-unnecessary coupling.
+**Lesson:** clean configuration boundaries make model promotion testable and limit changes across the application.
 
-Key lessons:
+## 10. Documentation is part of the system
 
-- A direct dependency is a package imported by project code. Transitive
-  dependencies belong in the lockfile and should not be declared without a
-  direct use.
-- Exact direct pins make model experiments easier to reproduce, while `uv.lock`
-  records the complete resolved dependency graph.
-- A secondary package index can create dependency-confusion risk. Marking the
-  official PyTorch CUDA index as explicit restricts it to PyTorch packages.
-- Python minor versions are part of the experiment environment. Restricting the
-  project to Python 3.13 prevents unreviewed interpreter upgrades.
-- Dependency resolution and package installation are separate gates. A lock must
-  resolve successfully before a large CUDA environment is installed.
+Planning-era documents had drifted from the working product. The documentation was reorganized so the root README explains outcomes, the architecture document owns system boundaries, component READMEs own local commands, and evidence documents own data/model claims.
 
-Current status: the 56-package dependency graph is locked and the project-local
-environment is installed. Exact import checks passed for all direct packages,
-CUDA executed a real tensor operation on the RTX 4070 Laptop GPU, and the ML
-suite completed with 19 passing tests and one capability-gated Windows symlink
-skip.
+**Lesson:** stale documentation can misrepresent a good implementation. Each fact needs an explicit documentary owner and links instead of duplicated promises.
 
-### Secure Dataset Acquisition
+## Current verified state
 
-Dataset archives are untrusted input even when they come from a reputable
-publisher. A valid license and HTTPS connection do not prevent corruption,
-unexpected archive members, path traversal, or decompression bombs.
+- end-to-end GPU-backed MVP: working
+- ML suite: `132 passed, 1 skipped`
+- backend suite: `23 passed, 1 skipped`
+- real backend-to-ML smoke: `1 passed`
+- frontend build and manual UI flow: passed
+- v2 validation and frozen held-out artifacts: retained locally
 
-Key lessons:
+## Next learning phase
 
-- A publisher checksum proves artifact identity only after the complete file is
-  hashed and matched. Incomplete downloads retain a `.part` suffix.
-- Resumable downloads and automatic retries are different concerns. Manual curl
-  resume preserves operator visibility when a multi-gigabyte transfer fails.
-- Archive extraction must follow inspection. Member paths, links, encryption,
-  duplicate names, declared sizes, and compression ratios are validated first.
-- Nested archives create a second trust boundary. Verifying the outer ZIP does
-  not make the inner 7z contents safe to extract automatically.
-- Supply-chain isolation includes tools. The existing Windows bsdtar/libarchive
-  support avoids introducing an unnecessary archive dependency.
+The next goal is measurable trust: analyze failure modes, score calibration, image-quality robustness, dataset/source stratification, privacy boundaries, model provenance, and human oversight. These steps can strengthen an experimental prototype, but clinical trust would still require representative external evidence and appropriate independent review.
 
-Current status: acquisition metadata, checksum verification, outer-ZIP policy,
-safe extraction, CLI commands, documentation, and synthetic security tests have
-been added. The complete ML suite passed with 45 tests and one capability-gated
-Windows symlink skip. No dataset has been downloaded.
+## Related documents
 
-## Phase 5: Frontend
-
-Planned learning goals:
-
-- Build a polished upload and result workflow.
-- Understand loading states, error states, and empty states.
-- Learn how UI design affects recruiter perception.
-
-## Phase 6: Evaluation and Model Card
-
-Planned learning goals:
-
-- Learn how to present model performance honestly.
-- Document known limitations.
-- Identify failure cases.
-
-## Phase 7: Production Readiness
-
-Planned learning goals:
-
-- Learn Docker basics.
-- Learn environment configuration.
-- Learn logging and health checks.
-- Create clear run instructions.
-
-## Phase 8: Resume Packaging
-
-Planned learning goals:
-
-- Convert the project into strong resume bullets.
-- Prepare a GitHub README that is easy to skim.
-- Create a demo script for interviews.
+- [Architecture](ARCHITECTURE.md)
+- [Project brief](PROJECT_BRIEF.md)
+- [Dataset card](DATASET_CARD.md)
+- [Training and evaluation](TRAINING.md)
+- [Root project guide](../README.md)

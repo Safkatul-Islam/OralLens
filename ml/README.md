@@ -1,150 +1,156 @@
-# ML Pipeline
+# OralLens AI ML
 
-The ML module provides the reproducible data, training, evaluation, and
-inference workflow for OralLens AI. The current block has a verified Part 2
-orthodontic plaque manifest, a safe PyTorch dataset loader, and a TorchVision
-Faster R-CNN baseline training and evaluation entrypoint.
+Project-local machine-learning package for orthodontic plaque-candidate object detection. It owns dataset validation, target conversion, model construction, training, evaluation, prediction, configs, and regression tests.
 
-## Responsibilities
+The detector is an experimental portfolio artifact, not a diagnostic model, clinically validated system, or medical device.
 
-- Prepare datasets
-- Split data into train, validation, and test sets
-- Train a baseline model
-- Evaluate model performance
-- Save model artifacts
-- Run inference on uploaded images
-- Generate visual evidence where possible
-- Document limitations in a model card
+## Current model
 
-## Current Structure
+- TorchVision Faster R-CNN with ResNet-50 FPN
+- binary contract: background `0`, plaque candidate `1`
+- official TorchVision pretrained initialization
+- state-dict-only project checkpoints loaded with `weights_only=True`
+- v2 inference threshold `0.65`, selected on complete validation
+- maximum inference results: 25
+
+Held-out test at score threshold `0.65` and IoU `0.5`:
+
+| Precision | Recall | F1 | Mean matched IoU |
+|---:|---:|---:|---:|
+| 0.7582 | 0.7037 | 0.7299 | 0.7541 |
+
+These are annotation-matching metrics on the project dataset and are not clinical-performance measures.
+
+## Package layout
 
 ```text
 ml/
-  configs/
-    orthodontic_plaque_detection_baseline.toml
-    orthodontic_plaque_detection_eval_smoke.toml
-    orthodontic_plaque_detection_mvp.toml
-    orthodontic_plaque_detection_mvp_eval.toml
-    orthodontic_plaque_detection_mvp_predict.toml
-    orthodontic_plaque_detection_predict_smoke.toml
-    orthodontic_plaque_detection_smoke.toml
-  src/orallens_ml/data/
-    acquisition.py
-    archive.py
-    manifest.py
-    audit.py
-    splits.py
-    orthodontic_plaque.py
-    orthodontic_plaque_dataset.py
-  src/orallens_ml/training/
-    detection.py
-  src/orallens_ml/modeling/
-    detection.py
-  src/orallens_ml/evaluation/
-    detection.py
-  src/orallens_ml/inference/
-    detection.py
-  src/orallens_ml/cli/
-    dataset.py
-    evaluate.py
-    predict.py
-    train.py
-  tests/
-  .python-version
-  pyproject.toml
+  configs/                       versioned train/evaluate/predict settings
+  src/orallens_ml/
+    cli/                         command-line entry modules
+    data/                        manifest and image dataset contracts
+    modeling/                    Faster R-CNN construction/checkpoint behavior
+    training/                    target conversion and training loop
+    evaluation/                  thresholded matching and metrics
+    inference/                   prediction config and JSON output
+  tests/                         data, model, CLI, security, and regression tests
+  data/                          ignored raw/prepared local data
+  runs/                          ignored checkpoints, metrics, and predictions
 ```
 
-Training outputs are written under `ml/runs/`, which is ignored by git.
+## Data in use
 
-## Normalized Data Flow
+Only the verified Part 2 orthodontic-plaque dataset is active.
 
-1. Download and verify the exact dataset version and license.
-2. Inspect the publisher's metadata and archive layout.
-3. Adapt source metadata into the documented normalized CSV manifest.
-4. Run the read-only dataset audit.
-5. Create deterministic patient-grouped split assignments.
-6. Validate retained images and load real manifest samples through PyTorch.
-7. Train a bounded smoke run before any longer baseline run.
-8. Train a bounded pretrained MVP run before any longer full baseline run.
-9. Evaluate checkpoints with transparent IoU-threshold validation metrics.
-10. Run checkpoint-backed one-image inference and write prediction artifacts.
+Manifest:
 
-The dataset is not downloaded automatically. This avoids hidden network access,
-license ambiguity, and accidental multi-gigabyte repository content.
-The same v1 policy applies to model weights: smoke runs use
-`pretrained_weights = "none"`, and baseline runs using TorchVision default
-weights require the official weight file to already exist in the local Torch
-cache before model construction.
+`ml/data/prepared/orthodontic_plaque/v3/part-2/manifest.csv`
 
-See [`../docs/DATASET_CARD.md`](../docs/DATASET_CARD.md) for provenance,
-limitations, required fields, and leakage controls.
+| Split | Images | Patients | Annotations |
+|---|---:|---:|---:|
+| Train | 3,834 | 55 | 48,098 |
+| Validation | 468 | 7 | 6,070 |
+| Test | 858 | 12 | 11,070 |
 
-The reviewed acquisition configuration and CLI verify publisher hashes and
-inspect the outer ZIP before extracting its expected 7z member. Inner 7z
-extraction remains a manual approval boundary until the real member listing has
-been reviewed. See
-[`../docs/DATA_ACQUISITION.md`](../docs/DATA_ACQUISITION.md).
+Part 1 remains excluded after its nested archive failed official integrity validation. See [Dataset card](../docs/DATASET_CARD.md) and [Data acquisition](../docs/DATA_ACQUISITION.md).
 
-See [`../docs/TRAINING.md`](../docs/TRAINING.md) for the training architecture,
-configs, smoke command, baseline command, artifact contract, and current limits.
+## Environment
 
-## Environment Setup
-
-The ML module uses Python 3.13 and uv. From the repository root, create the
-project-local environment only after the lockfile has been generated and
-reviewed:
+The project targets Python 3.13 and uses `ml/.venv`. Create/synchronize it with project-local dependencies only:
 
 ```powershell
-uv sync --project ml --group training --python C:\Python313\python.exe --no-python-downloads --cache-dir ml\.uv-cache --locked
+Push-Location ml
+uv sync --group dev --group training
+Pop-Location
 ```
 
-Dependencies are separated by responsibility:
+Detailed versions and GPU notes are in [ML environment](../docs/ML_ENVIRONMENT.md).
 
-- Base: Pillow for upcoming image-content validation.
-- Development: Pytest.
-- Training: PyTorch, TorchVision, Captum, and scikit-learn.
+## v2 workflow
 
-Run the tests through the locked ML environment:
+Run commands from the repository root.
+
+### Train
 
 ```powershell
-uv run --project ml --group training python -m pytest
+ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.train detection-baseline --config "ml\configs\orthodontic_plaque_detection_mvp_v2.toml"
 ```
 
-See [`../docs/ML_ENVIRONMENT.md`](../docs/ML_ENVIRONMENT.md) for version
-rationale, official sources, CUDA index isolation, verification gates, and the
-dependency update policy.
+Outputs:
 
-Latest verification in the locked ML environment on Windows with Python 3.13.5
-and Pytest 9.1.1:
+- `ml/runs/detection/orthodontic_plaque_part2_mvp_v2/checkpoint_last.pt`
+- `ml/runs/detection/orthodontic_plaque_part2_mvp_v2/metrics.json`
 
-```text
-127 passed, 1 skipped
+### Select the operating point on validation
+
+```powershell
+ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.evaluate detection --config "ml\configs\orthodontic_plaque_detection_mvp_v2_eval.toml"
 ```
 
-The skipped case requires permission to create symbolic links on Windows. The
-platform-independent path-escape test passed, so dataset-root containment is
-still exercised on this environment.
+Complete-validation F1 peaked at tested threshold `0.65`. Do not select a new threshold from test results.
 
-The CUDA verification also passed with PyTorch 2.12.1+cu126 and TorchVision
-0.27.1+cu126 on an NVIDIA GeForce RTX 4070 Laptop GPU.
+### Evaluate the frozen held-out test
 
-## Learning Goals
+```powershell
+ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.evaluate detection --config "ml\configs\orthodontic_plaque_detection_mvp_v2_test.toml"
+```
 
-- Understand supervised learning
-- Understand image preprocessing
-- Learn why train/validation/test splits matter
-- Learn evaluation metrics beyond accuracy
-- Learn model artifact management
-- Learn how training code differs from inference code
+The test config fixes split `test`, IoU `0.5`, score threshold `0.65`, and no batch cap.
 
-## Status
+### Predict one image
 
-Dataset acquisition gates, Part 2 manifest generation, image validation, the
-PyTorch dataset loader, shared detection model/checkpoint utilities, baseline
-detection training CLI, detection evaluation CLI, and detection inference module
-are implemented and verified. A bounded pretrained MVP checkpoint has been
-trained and evaluated from the verified Part 2 manifest. Pretrained-weight
-handling is intentionally MVP-scoped: no implicit downloads during training,
-with pretrained runs requiring a reviewed official TorchVision cache file.
-Dataset Part 1 remains excluded because official 7-Zip integrity testing fails
-inside the nested archive. Part 2 is the only current training scope.
+```powershell
+ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.predict detection --config "ml\configs\orthodontic_plaque_detection_mvp_v2_predict.toml" --image "C:\path\to\image.jpg"
+```
+
+The backend real-ML startup script uses this same prediction config.
+
+## Annotation boundary policy
+
+Manifest annotations use normalized center-width-height fields. Target conversion:
+
+1. verifies finite normalized input
+2. derives corner coordinates
+3. allows only `1e-6` of numerical boundary tolerance
+4. clips tolerated crossings with TorchVision
+5. rejects boxes that are grossly invalid or non-positive after clipping
+
+The full audit found two tiny boundary crossings in one rotated test image, with no degenerate result. Source annotations are retained unchanged and no sample is silently skipped.
+
+## Tests
+
+```powershell
+ml\.venv\Scripts\python.exe -B -m pytest ml\tests
+```
+
+Latest result: `132 passed, 1 skipped`.
+
+The skip requires Windows symbolic-link creation privileges. Tests that do not require that privilege continue to enforce path containment.
+
+Coverage includes:
+
+- manifest/schema/numeric/path validation
+- image decoding and symlink boundaries
+- normalized and derived box validation
+- tolerated clipping, gross invalidity, and degeneration
+- model/checkpoint contracts
+- training, evaluation, inference, and CLI errors
+- concise evaluation error translation without raw tracebacks
+- config and generated-artifact behavior
+
+## Artifact policy
+
+Raw/prepared data, checkpoints, metrics, prediction output, logs, and caches are excluded by the root `.gitignore`. They remain local for reproducibility and evidence. Do not commit them or silently delete/overwrite them.
+
+## Limitations and next work
+
+The present evidence comes from one specialized dataset and a bounded experiment. High-priority research work is error analysis, score calibration assessment, acquisition-quality robustness, source/subgroup stratification where metadata supports it, and external validation design. None of those should be converted into clinical claims without appropriate representative evidence and review.
+
+## Related documents
+
+- [Training and evaluation](../docs/TRAINING.md)
+- [Dataset card](../docs/DATASET_CARD.md)
+- [ML environment](../docs/ML_ENVIRONMENT.md)
+- [Pipeline](../docs/PIPELINE.md)
+- [Architecture](../docs/ARCHITECTURE.md)
+- [Backend integration](../backend/README.md)

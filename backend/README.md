@@ -1,196 +1,131 @@
-# Backend
+# OralLens AI Backend
 
-The backend exposes the API used by the frontend to upload oral images, run screening-support inference, and return structured results.
+FastAPI service for validated oral-image uploads, configurable mock or real-model inference, structured screening-support reports, and local scan persistence.
 
-The current implementation uses deterministic mock inference behind the same
-response contract the trained detector will use. That gives the frontend and API
-tests a stable contract while keeping the heavy ML runtime outside the backend
-MVP process.
+The backend is part of an experimental portfolio project. Its output is not a diagnosis, clinical validation, medical-device result, or treatment recommendation.
 
-## Architecture
+## Responsibilities
 
-```text
-app/
-  main.py                  FastAPI app factory and dependency wiring
-  config.py                Typed settings loaded from ORALLENS_* env vars
-  error_handlers.py        Safe, consistent public error responses
-  logging_config.py        JSON application logging
-  middleware.py            Request IDs, timing, and request logs
-  schemas.py               Pydantic request/response models
-  storage.py               JSON-backed local scan store
-  api/
-    health.py              GET /health
-    scans.py               scan upload, list, and detail endpoints
-  services/
-    scan_service.py        upload validation, inference orchestration, reporting
-  pipeline/
-    inference.py           inference protocol and deterministic mock adapter
-tests/
-  test_hardening.py
-  test_health.py
-  test_scans.py
-```
+- expose health and scan HTTP contracts
+- validate upload metadata, size, extension, and file signature
+- coordinate inference through a stable adapter protocol
+- translate prediction output into typed evidence and report schemas
+- persist local scan records atomically
+- return structured, client-safe errors with request IDs
 
-## API Endpoints
+The step-by-step request and model flow is in [Pipeline](../docs/PIPELINE.md). System boundaries are in [Architecture](../docs/ARCHITECTURE.md), and endpoint details are in [API](../docs/API.md).
+
+## Structure
 
 ```text
-GET  /health
-POST /scans
-GET  /scans
-GET  /scans/{scan_id}
+backend/
+  app/
+    api/             HTTP routes
+    pipeline/        mock and ML inference adapters
+    services/        upload, inference, report, and storage orchestration
+    config.py        typed ORALLENS_ settings
+    schemas.py       request/response data contracts
+    storage.py       local JSON scan store
+    error_handlers.py
+    middleware.py
+    main.py          application factory and dependency wiring
+  scripts/           real-ML launchers
+  tests/             unit, API, CORS, config, storage, and integration coverage
 ```
 
-## Security Decisions
+## Runtime modes
 
-- Uploads are accepted only as JPEG, PNG, or WebP.
-- File extension, declared content type, and image magic bytes are validated.
-- Upload size is capped by `ORALLENS_MAX_UPLOAD_BYTES`.
-- User filenames are never used as filesystem paths.
-- The backend persists scan metadata and hashes, not raw uploaded images. ML mode
-  uses a controlled temporary image file during inference and deletes it after
-  the adapter returns.
-- User uploads cannot choose model paths, checkpoint paths, or output paths.
-- Error responses avoid leaking stack traces or internal paths.
-- CORS uses an explicit origin allowlist and does not default to `*`.
-- Request IDs are validated before they are echoed or logged.
-- Request logs exclude bodies, uploaded bytes, query strings, and credentials.
+`ORALLENS_INFERENCE_MODE` accepts:
 
-## Runtime Configuration
+- `mock` — default deterministic placeholder for lightweight development and tests
+- `ml` — v2 TorchVision plaque-candidate detector through the project-local ML package
 
-Settings use the `ORALLENS_` environment prefix. Important values include:
+The default v2 ML config is:
 
-```text
-ORALLENS_ENVIRONMENT=local
-ORALLENS_LOG_LEVEL=INFO
-ORALLENS_INFERENCE_MODE=mock
-ORALLENS_MAX_UPLOAD_BYTES=5242880
-ORALLENS_CORS_ALLOWED_ORIGINS=["http://127.0.0.1:5173","http://localhost:5173"]
-ORALLENS_CORS_ALLOW_CREDENTIALS=false
-ORALLENS_ML_SOURCE_PATH=../ml/src
-ORALLENS_ML_DETECTION_CONFIG_PATH=../ml/configs/orthodontic_plaque_detection_mvp_predict.toml
-ORALLENS_ML_TEMP_DIR=var/ml-inputs
-```
+`ml/configs/orthodontic_plaque_detection_mvp_v2_predict.toml`
 
-See `../docs/API.md` for the endpoint contract, validation behavior, error schema, and CORS details.
+The backend does not hard-code checkpoint logic in routes. Model selection remains behind typed configuration and the inference adapter.
 
-## ML Inference Contract
+## Run with the real v2 detector
 
-The backend scan service depends on a small inference interface:
+Prerequisites:
 
-```text
-predict(image_bytes, content_type) -> InferenceResult
-```
+- project-local `ml/.venv` with backend and ML runtime dependencies
+- local v2 checkpoint at the path referenced by the prediction config
+- prepared project-local data only when running the integration smoke
 
-The response includes:
-
-- `label`, `display_name`, `confidence`, and `severity`
-- `is_mock` and `model_name`
-- `prediction_count`
-- `detections[]` with `box_xyxy`, `label`, and `score`
-
-The default adapter is deterministic mock inference, so `detections` is empty.
-Set `ORALLENS_INFERENCE_MODE=ml` to use the optional local MVP detector adapter.
-ML mode lazy-imports the project-local `orallens_ml` package, writes validated
-upload bytes to a controlled backend temp directory, calls the configured
-checkpoint-backed prediction config, and maps returned boxes into the same API
-schema.
-
-Current ML mode supports JPEG and PNG uploads. WebP remains accepted in mock
-mode, but returns a clean unsupported-media response in ML mode until the ML
-image loader supports it.
-
-Start the local backend in ML mode from the repository root:
+From the repository root:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File backend\scripts\run-ml-server.ps1
 ```
 
-## Local ML Integration Smoke
+The script selects `ml` mode, uses the v2 config, and starts Uvicorn on `http://127.0.0.1:8000`.
 
-The real backend-to-ML smoke requires one Python environment that can import both
-the backend package and the project-local ML package. The latest local smoke used
-`ml/.venv` with the backend runtime package installed into that project-local
-environment.
+## Run in mock mode
 
-Smoke result:
+From the repository root, with backend dependencies available in the project-local environment:
 
-```text
-POST /scans
-inference_mode: ml
-status: 201
-model_name: orthodontic-plaque-mvp
-is_mock: false
-prediction_count: 25
-first_score: 0.19762550294399261
+```powershell
+ml\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
 ```
 
-The adapter deleted the temporary uploaded image copy after inference. The scan
-metadata was written to `backend/var/integration-smoke/scans.json`; model
-prediction artifacts remain under ignored `ml/runs/detection/` outputs.
+No inference environment override is required because `mock` is the safe default.
 
-Run the optional integration smoke from the repository root only after the MVP
-checkpoint exists:
+## Configuration
+
+Settings use the `ORALLENS_` prefix and may be loaded from a local `.env`, which is excluded from git.
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `ORALLENS_INFERENCE_MODE` | `mock` | inference adapter selection |
+| `ORALLENS_MAX_UPLOAD_BYTES` | `5242880` | upload-size boundary |
+| `ORALLENS_STORAGE_PATH` | `backend/var/scans.json` | local record store |
+| `ORALLENS_ML_SOURCE_PATH` | `ml/src` | project-local ML import boundary |
+| `ORALLENS_ML_DETECTION_CONFIG_PATH` | v2 predict config | checkpoint and inference settings |
+| `ORALLENS_ML_TEMP_DIR` | `backend/var/ml-inputs` | constrained temporary inputs |
+| `ORALLENS_LOG_LEVEL` | `INFO` | application logging level |
+
+Local CORS origins are explicitly limited to `http://127.0.0.1:5173` and `http://localhost:5173`.
+
+## Upload behavior
+
+The general backend boundary recognizes JPEG, PNG, and WebP metadata/signatures. The real ML adapter intentionally supports JPEG and PNG only and translates WebP to a concise HTTP `415`. The frontend is aligned to that real-model subset.
+
+The service:
+
+1. checks MIME type and filename extension
+2. reads the upload in 1 MiB chunks while enforcing the total limit
+3. rejects empty input and signature mismatches
+4. hashes validated bytes
+5. runs the selected adapter
+6. stores a typed scan record
+
+User-provided filenames are reduced to safe display basenames and never used as storage paths.
+
+## Tests
+
+Complete backend suite from the repository root:
+
+```powershell
+ml\.venv\Scripts\python.exe -B -m pytest backend\tests
+```
+
+Latest result: `23 passed, 1 skipped`. The skip is the opt-in real-model integration test.
+
+Run that smoke explicitly when the dataset, v2 checkpoint, and GPU/CPU ML runtime are available:
 
 ```powershell
 $env:ORALLENS_RUN_ML_INTEGRATION = "1"
-ml\.venv\Scripts\python.exe -m pytest backend\tests\test_ml_integration_smoke.py --basetemp "ml\.uv-cache\pytest-backend-ml" -p no:cacheprovider
+ml\.venv\Scripts\python.exe -B -m pytest backend\tests\test_ml_integration_smoke.py
 ```
 
-The normal backend suite skips this smoke:
+Latest real integration result: `1 passed`.
 
-```powershell
-ml\.venv\Scripts\python.exe -m pytest backend\tests --basetemp "ml\.uv-cache\pytest-backend" -p no:cacheprovider
-```
+Coverage includes uploads, signature mismatches, size limits, filenames, storage, schemas, configured/unconfigured CORS behavior, ML adapter selection, unsupported ML input, cleanup, error boundaries, and real checkpoint-backed output.
 
-## Quality Checklist
+## Local data and production boundary
 
-### Is the implementation secure?
+`backend/var` is ignored and intentionally retains local scan evidence. `JSONScanStore` is appropriate for this single-user demonstration, not for protected health information, multiple processes, or external deployment.
 
-For this backend slice, yes for local portfolio scope. It validates file type, extension, file signature, size, request IDs, and allowed browser origins. It avoids path traversal and returns generic messages for unexpected failures.
-
-### Is the code clean and efficiently written?
-
-The code separates routing, settings, schemas, middleware, error handling, logging, storage, service orchestration, and inference adapter logic. The scan service depends on an inference protocol rather than a concrete model runtime. The app factory allows tests to inject temporary storage and environment-specific settings.
-
-### Is the documentation clear?
-
-This README documents architecture and operations. The project-level API contract documents endpoints, validation, errors, configuration, CORS, request IDs, and logging safety.
-
-### Are there enough tests?
-
-Tests cover health, image upload validation, scan persistence, inference response contract, CORS allowlisting, request ID handling, safe validation errors, and unexpected-error redaction.
-
-## Local Development
-
-Install dependencies from inside `backend/` using a project-local virtual environment.
-
-```text
-python -m venv .venv
-.venv\Scripts\activate
-python -m pip install -e ".[dev]"
-```
-
-Run tests:
-
-```text
-pytest
-```
-
-Run the API:
-
-```text
-fastapi dev app/main.py
-```
-
-## Learning Goals
-
-- Understand what an API does
-- Learn request and response schemas
-- Learn input validation
-- Learn backend error handling
-- Learn how a backend calls ML code
-- Learn how tests protect behavior
-
-## Status
-
-Backend skeleton hardened with explicit CORS, structured logging, request IDs, centralized error responses, a stable inference contract, mock adapter, and tests.
+Before deployment, add authentication, authorization, rate limiting, encrypted policy-governed storage, retention/deletion controls, observability, deployment configuration, and security review. These are documented gaps, not implied features.

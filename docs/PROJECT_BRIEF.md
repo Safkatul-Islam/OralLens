@@ -1,179 +1,104 @@
-# Project Brief: OralLens AI
+# OralLens AI Project Brief
 
-## One-Line Summary
+## Project statement
 
-OralLens AI is a production-style AI/ML web application that screens oral images, returns model predictions with confidence and visual evidence, and generates a structured AI-assisted report.
+OralLens AI is a resume-quality, end-to-end AI/ML engineering project that demonstrates how an oral image can move through a secure upload boundary, an object-detection pipeline, structured API contracts, local persistence, and an evidence-oriented user interface.
 
-## Why This Project Stands Out
+The system supports experimentation and learning. It does not diagnose disease, establish clinical risk, recommend treatment, or claim medical-device or clinical-validation status.
 
-Many beginner AI projects stop at a notebook. This project is designed to show the full path from data to user-facing product:
+## User and need
 
-- Data preparation
-- Model training or fine-tuning
-- Evaluation
-- Inference serving
-- API design
-- Frontend visualization
-- Responsible AI messaging
-- Deployment planning
-- Clear documentation
+The primary audience is a reviewer, recruiter, engineer, or ML practitioner evaluating a complete applied-ML workflow. The interface is also designed to make experimental detector output understandable to a non-specialist without presenting it as medical advice.
 
-That combination is more useful to hiring managers because it proves practical engineering ability, not only model experimentation.
+The project addresses a common portfolio gap: many ML demonstrations stop at a notebook or a metric. OralLens AI connects data contracts, reproducible experiments, inference integration, API security, persistence, frontend visualization, tests, and limitations into one inspectable system.
 
-## Target Audience
+## Current user story
 
-This project is built for a portfolio and resume targeting:
+As a local user, I can upload a JPEG or PNG oral image and receive:
 
-- Junior Machine Learning Engineer
-- AI Engineer
-- Data Scientist
-- Computer Vision Engineer
-- Full-stack AI Engineer
-- MLOps or ML Platform Intern/Junior Engineer
+- a screening-support label and detector confidence
+- candidate plaque bounding boxes
+- a concise evidence summary
+- an automatically structured report
+- explicit limitations, disclaimer, and appropriate next steps
 
-## Product Concept
+## Achieved MVP scope
 
-A user uploads an oral or dental image. The system validates the image, runs an ML model, produces a likely finding with confidence, displays visual evidence, and generates a readable report.
+- React, TypeScript, and Vite frontend with preview and box overlays
+- FastAPI backend with typed configuration, schemas, services, storage, and error handling
+- deterministic mock mode for lightweight development
+- project-local TorchVision Faster R-CNN inference adapter
+- verified Part 2 orthodontic-plaque dataset with patient-aware splits
+- reproducible training, full-validation threshold selection, frozen held-out evaluation, and prediction CLIs
+- strict input, path, annotation, checkpoint, and output validation
+- local JSON scan persistence and ignored ML evidence artifacts
+- automated ML and backend suites, real integration smoke test, frontend build, and manual browser E2E verification
 
-The report should include:
+## Evidence of completion
 
-- Uploaded image metadata
-- Predicted class or finding
-- Confidence score
-- Visual evidence summary
-- Limitations
-- Suggested next steps
-- Disclaimer that the output is not medical diagnosis
+The v2 detector improved training and validation loss over three bounded epochs. Its `0.65` score threshold was selected on all 468 validation images and then evaluated once on 858 held-out test images.
 
-## Core User Flow
+| Evidence | Result |
+|---|---|
+| Full validation at threshold `0.65`, IoU `0.5` | precision `0.7652`, recall `0.7516`, F1 `0.7583` |
+| Held-out test at frozen threshold, IoU `0.5` | precision `0.7582`, recall `0.7037`, F1 `0.7299` |
+| ML test suite | `132 passed, 1 skipped` |
+| Backend test suite | `23 passed, 1 skipped` |
+| Real backend-to-ML integration | `1 passed` |
+| Frontend production build | passed |
+| Manual browser E2E | passed |
 
-1. User opens the dashboard.
-2. User uploads an oral image.
-3. Backend validates the image.
-4. ML model performs inference.
-5. System returns prediction, confidence, and optional visual overlay.
-6. Report generator creates a structured summary.
-7. Frontend displays image, prediction, report, and scan history.
+These measurements describe annotation matching on this dataset. They do not measure disease diagnosis, patient outcomes, or clinical safety.
 
-## System Components
+## Design principles
 
-### Frontend
+- **Honest claims:** separate detector metrics from clinical meaning.
+- **Explicit boundaries:** routes, services, storage, integration, and ML code have distinct responsibilities.
+- **Fail closed:** malformed uploads, paths, annotations, boxes, and checkpoints are rejected.
+- **Reproducibility:** configs, seeds, commands, and locally generated metrics define each experiment.
+- **Test meaningful behavior:** cover validation, security, error translation, integration, and regression paths.
+- **MVP discipline:** avoid infrastructure and dependencies that do not serve a present requirement.
 
-Purpose: give recruiters and users a polished way to interact with the model.
+## Out of scope for the current claim
 
-Planned features:
+- diagnosis or differential diagnosis
+- treatment or triage recommendations
+- clinical validation or claims of generalization to patients
+- handling protected health information
+- authentication, accounts, or multi-user storage
+- cloud deployment, monitoring, or regulated operations
+- mobile capture guidance or image-quality scoring
+- additional oral conditions unsupported by verified data
 
-- Image upload
-- Preview before submission
-- Prediction result panel
-- Confidence display
-- Visual overlay display
-- Report view
-- Scan history table
-- Loading, error, and empty states
+## Next phase: measurable trust
 
-### Backend
+The remaining work is not to soften disclaimers; it is to generate stronger evidence and safer system behavior. The next phase should prioritize:
 
-Purpose: turn the ML pipeline into a usable service.
+1. structured error and false-positive/false-negative review
+2. calibration analysis and honest interpretation of detector scores
+3. robustness evaluation across image quality, framing, rotation, and acquisition variation
+4. subgroup or source-stratified analysis where valid metadata exists
+5. dataset lineage, exclusion, and boundary-policy reporting
+6. model/version provenance and reproducible evaluation summaries
+7. privacy, authentication, retention, observability, and deployment threat modeling before any external hosting
+8. documented human oversight and clear escalation when images are unsupported or unreliable
 
-Planned features:
+This can make OralLens AI more trustworthy as an experimental research prototype. It would still not establish clinical validity without representative studies and appropriate independent review.
 
-- Health check endpoint
-- Upload endpoint
-- Inference endpoint
-- Result persistence
-- Input validation
-- Structured error responses
-- Logging
-- Tests
+## Success criteria for the next milestone
 
-### ML Pipeline
+- reliability claims are tied to reproducible artifacts and defined datasets
+- known failure modes are categorized and visible
+- confidence presentation does not imply calibrated disease probability
+- unsupported inputs and low-quality conditions fail or warn explicitly
+- model, config, threshold, dataset, and evaluation provenance are traceable
+- security and privacy gaps are explicit before deployment decisions
+- documentation remains synchronized with executable behavior
 
-Purpose: build a reproducible model workflow.
+## References
 
-Planned features:
-
-- Dataset preparation script
-- Train/validation/test split
-- Baseline model
-- Improved model
-- Evaluation script
-- Inference utility
-- Saved model artifact
-- Model card
-
-### Explainability
-
-Purpose: make model behavior easier to inspect.
-
-Planned features:
-
-- Highlighted output regions, heatmaps, or segmentation masks depending on dataset
-- Confidence thresholds
-- Failure case examples
-
-### Documentation
-
-Purpose: make the project easy to understand quickly.
-
-Planned docs:
-
-- README
-- Learning log
-- Model card
-- Architecture diagram
-- API documentation
-- Resume bullet examples
-
-## MVP Scope
-
-The first working version should include:
-
-- Local frontend
-- Local backend
-- Image upload
-- Mock or baseline inference
-- Result display
-- Basic project documentation
-
-## Resume-Grade Scope
-
-The stronger version should include:
-
-- Real model inference
-- Evaluation metrics
-- Visual evidence output
-- Structured report generation
-- API tests
-- Dockerized local run
-- Model card
-- Architecture diagram
-- Polished README with screenshots
-
-## Stretch Scope
-
-Advanced additions:
-
-- Model confidence calibration
-- Batch evaluation
-- Drift or monitoring-style logs
-- Authentication-free demo mode
-- Cloud deployment notes
-- Demo video script
-
-## Responsible AI Boundaries
-
-This project must avoid claiming diagnosis or clinical decision-making. It should consistently describe outputs as screening support, educational analysis, or visual findings. The UI and docs should tell users to consult a licensed dental professional for real concerns.
-
-## Success Criteria
-
-The project is successful when a hiring manager can understand in under two minutes:
-
-- What problem the project solves
-- What AI/ML methods were used
-- How the model was evaluated
-- How the model is served
-- How the frontend uses the API
-- What tradeoffs and limitations were considered
-- How to run the project locally
-
+- [Architecture](ARCHITECTURE.md)
+- [Training and evaluation](TRAINING.md)
+- [Dataset card](DATASET_CARD.md)
+- [API contract](API.md)
+- [Root project guide](../README.md)

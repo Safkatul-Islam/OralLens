@@ -1,311 +1,183 @@
-# Training
+# Training and Evaluation
 
-## Scope
+## Claim boundary
 
-The current ML training path is a baseline object detector for the verified
-Part 2 orthodontic plaque manifest. It uses TorchVision Faster R-CNN and the
-project's manifest loader to convert normalized source annotations into
-TorchVision pixel-space detection targets.
+This document records reproducible object-detection experiments for a portfolio and learning project. Reported precision, recall, F1, and IoU describe annotation matching on one orthodontic-plaque dataset. They are not sensitivity, specificity, diagnostic accuracy, patient risk, or clinical validation.
 
-This baseline is an engineering and learning milestone. It is not a validated
-clinical model, must not be described as diagnostic, and must not be used for
-treatment decisions.
+## Model contract
 
-## Architecture
+- framework: PyTorch and TorchVision
+- architecture: Faster R-CNN with ResNet-50 FPN
+- classes: `0` background, `1` plaque candidate
+- initialization: official TorchVision default pretrained weights
+- image size range: 512 to 768 pixels
+- trainable backbone layers: 3
+- checkpoint format: model state dictionary loaded with `weights_only=True`
 
-Training code is separated from dataset acquisition:
+## Data contract
 
-```text
-ml/src/orallens_ml/
-  data/
-    orthodontic_plaque_dataset.py
-  modeling/
-    detection.py
-  training/
-    detection.py
-  evaluation/
-    detection.py
-  inference/
-    detection.py
-  cli/
-    evaluate.py
-    predict.py
-    train.py
-```
+Only the verified Part 2 orthodontic-plaque material is used. The prepared manifest has patient-aware splits:
 
-Responsibilities:
+| Split | Images | Patients | Annotations |
+|---|---:|---:|---:|
+| Train | 3,834 | 55 | 48,098 |
+| Validation | 468 | 7 | 6,070 |
+| Test | 858 | 12 | 11,070 |
 
-- `orthodontic_plaque_dataset.py` loads the generated Part 2 manifest, validates
-  paths, decodes images, and returns normalized boxes.
-- `modeling/detection.py` owns shared detector construction, state-dict-only
-  checkpoint writing, checkpoint loading, and checkpoint/config compatibility
-  validation.
-- `training/detection.py` validates training config, adapts targets to
-  TorchVision format, runs training, and writes artifacts.
-- `evaluation/detection.py` loads checkpoints and reports transparent
-  IoU-threshold validation metrics.
-- `inference/detection.py` loads checkpoints, validates one input image, filters
-  predictions by score, and writes JSON prediction artifacts.
-- `cli/train.py` exposes the training entrypoint without mixing it into dataset
-  acquisition commands.
+The manifest loader validates schema, split values, safe paths, extensions, JSON annotations, finite numeric fields, normalized values, positive annotation counts, root containment, file existence, and symlink policy.
 
-## Configs
+### Boundary policy for normalized boxes
 
-Two configs are intentionally kept separate:
+Source annotations use normalized `x_center`, `y_center`, `width`, and `height`. Target conversion derives corner coordinates.
 
-| Config | Purpose |
-| --- | --- |
-| `ml/configs/orthodontic_plaque_detection_smoke.toml` | Fast CPU smoke run against real data. Uses one train batch and one validation batch. |
-| `ml/configs/orthodontic_plaque_detection_eval_smoke.toml` | Fast CPU evaluation smoke run against the smoke checkpoint and one validation batch. |
-| `ml/configs/orthodontic_plaque_detection_predict_smoke.toml` | Fast CPU one-image prediction smoke run against the smoke checkpoint. |
-| `ml/configs/orthodontic_plaque_detection_mvp.toml` | Bounded pretrained MVP run against real Part 2 data. Uses official TorchVision weights, one epoch, and capped train/validation batches. |
-| `ml/configs/orthodontic_plaque_detection_mvp_eval.toml` | Bounded validation evaluation for the MVP checkpoint. |
-| `ml/configs/orthodontic_plaque_detection_mvp_predict.toml` | One-image prediction run for the MVP checkpoint. |
-| `ml/configs/orthodontic_plaque_detection_baseline.toml` | Baseline training run against the verified Part 2 manifest. Uses default TorchVision weights and full configured epochs. |
+- fully in-range boxes remain unchanged
+- a derived corner may cross an image boundary by at most `1e-6`, covering tiny numerical/rotation edge effects
+- tolerated crossings are clipped with TorchVision's box operation
+- positive width and height are revalidated after clipping
+- grossly out-of-range or degenerate boxes fail closed
 
-These configs keep outputs under `ml/runs/detection/`, which is ignored by git.
-Dataset files, checkpoints, and metrics artifacts must not be committed.
+The complete manifest audit found two affected annotations in one test image. The maximum crossing was approximately `5e-7`; neither box became degenerate after clipping. No manifest row was deleted, skipped, or silently altered.
 
-## Smoke Run
+## Reproducibility controls
 
-Run the bounded smoke command first after any training-code change:
+- TOML configs define data, model, optimizer, device, seed, batch caps, checkpoint, thresholds, and outputs
+- v2 seed: `20260711`
+- patient-aware split assignments remain fixed
+- validation selects the score threshold
+- held-out test uses one frozen threshold and is not used for retuning
+- generated checkpoints, metrics, predictions, and data are local ignored artifacts
+- evaluator errors translate shared target-validation failures into concise evaluation-domain failures
 
-```powershell
-ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.train detection-baseline --config "ml\configs\orthodontic_plaque_detection_smoke.toml"
-```
+Run commands below from the repository root with the project-local ML environment.
 
-Expected outputs:
+## v1 baseline
 
-```text
-ml/runs/detection/orthodontic_plaque_part2_smoke/
-  checkpoint_last.pt
-  metrics.json
-```
+Config: `ml/configs/orthodontic_plaque_detection_mvp.toml`
 
-The current smoke run completed successfully with:
+The intentionally small baseline used one epoch, batch size 1, 64 training batches, and 16 validation batches.
 
-```text
-status: detection-baseline-trained
-train_loss: 1.9249593019485474
-validation_loss: 1.2211699485778809
-```
+| Metric | Result |
+|---|---:|
+| Training loss | 1.2272 |
+| Validation loss | 0.9620 |
 
-These loss values only prove that the command, loader, model, optimizer,
-checkpoint writer, and metrics writer executed on real data. They are not model
-quality claims.
+A 64-image validation calibration selected threshold `0.15` from the tested values:
 
-## Baseline Run
+| Precision | Recall | F1 | TP | FP | FN |
+|---:|---:|---:|---:|---:|---:|
+| 0.0489 | 0.1361 | 0.0720 | 86 | 1,671 | 546 |
 
-The baseline command is:
+This weak baseline established that the pipeline ran but was not a useful final operating point.
+
+## v2 training experiment
+
+Config: `ml/configs/orthodontic_plaque_detection_mvp_v2.toml`
+
+Key settings:
+
+| Setting | Value |
+|---|---:|
+| Epochs | 3 |
+| Batch size | 1 |
+| Learning rate | 0.005 |
+| Momentum | 0.9 |
+| Weight decay | 0.0005 |
+| Maximum training batches per epoch | 512 |
+| Maximum validation batches per epoch | 64 |
+| Workers | 0 |
+| Device | automatic |
+
+Command:
 
 ```powershell
-ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.train detection-baseline --config "ml\configs\orthodontic_plaque_detection_baseline.toml"
+ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.train detection-baseline --config "ml\configs\orthodontic_plaque_detection_mvp_v2.toml"
 ```
 
-Expected outputs:
+Loss history:
 
-```text
-ml/runs/detection/orthodontic_plaque_part2_baseline/
-  checkpoint_last.pt
-  metrics.json
-```
+| Epoch | Training loss | Validation loss |
+|---:|---:|---:|
+| 1 | 1.0039 | 0.6238 |
+| 2 | 0.8170 | 0.6192 |
+| 3 | 0.7662 | 0.6145 |
 
-The baseline config uses TorchVision's default Faster R-CNN weights. If weights
-are not already present in the local Torch cache, the run fails before
-TorchVision can start an implicit download. This keeps baseline training
-explicit and reviewable: approve an official TorchVision weights download first,
-or switch `pretrained_weights` to `"none"` for smoke/offline development.
+Both losses decreased across the bounded run; no validation-loss reversal was observed. This is useful experiment evidence, not proof of generalization.
 
-The cache path follows Torch's documented behavior:
+Local outputs:
 
-```text
-torch.hub.get_dir()/checkpoints/<official-weight-filename>
-```
+- `ml/runs/detection/orthodontic_plaque_part2_mvp_v2/checkpoint_last.pt`
+- `ml/runs/detection/orthodontic_plaque_part2_mvp_v2/metrics.json`
 
-## MVP Pretrained Run
+## Full-validation threshold selection
 
-The MVP run uses the same verified Part 2 data and official TorchVision weights,
-but caps the number of batches so the project gets a real checkpoint quickly
-without over-optimizing before the product path is complete:
+Config: `ml/configs/orthodontic_plaque_detection_mvp_v2_eval.toml`
+
+Command:
 
 ```powershell
-ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.train detection-baseline --config "ml\configs\orthodontic_plaque_detection_mvp.toml"
+ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.evaluate detection --config "ml\configs\orthodontic_plaque_detection_mvp_v2_eval.toml"
 ```
 
-Current bounded MVP result:
+The complete validation split covered 468 images and 6,070 targets at IoU `0.5`. The broad tested F1 maximum was `0.65`; no finer search was performed to avoid unnecessary validation overfitting.
 
-```text
-status: detection-baseline-trained
-train_loss: 1.2272009430453181
-validation_loss: 0.9619900770485401
-```
+| Threshold | Precision | Recall | F1 |
+|---:|---:|---:|---:|
+| 0.60 | 0.7375 | 0.7783 | 0.7574 |
+| **0.65** | **0.7652** | **0.7516** | **0.7583** |
+| 0.70 | 0.7924 | 0.7180 | 0.7533 |
 
-This checkpoint is useful for backend and inference integration. It is not a
-final model-quality claim.
+At `0.65`: TP 4,562; FP 1,400; FN 1,508; prediction count 5,962; mean matched IoU `0.7487`.
 
-## Evaluation
+The selected threshold was copied to the prediction and held-out test configs before test evaluation.
 
-The first evaluation layer reports transparent IoU-threshold detection metrics
-instead of full COCO mAP. It uses `torchvision.ops.box_iou` to greedily match
-predictions to ground-truth boxes of the same class after score filtering.
+## Frozen held-out evaluation
 
-Smoke evaluation command:
+Config: `ml/configs/orthodontic_plaque_detection_mvp_v2_test.toml`
+
+Command:
 
 ```powershell
-ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.evaluate detection --config "ml\configs\orthodontic_plaque_detection_eval_smoke.toml"
+ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.evaluate detection --config "ml\configs\orthodontic_plaque_detection_mvp_v2_test.toml"
 ```
 
-Expected output:
+The final run covered all 858 test images and 11,070 targets at the frozen score threshold `0.65` and IoU `0.5`.
 
-```text
-ml/runs/detection/orthodontic_plaque_part2_smoke_eval/
-  evaluation_metrics.json
-```
+| Precision | Recall | F1 | Mean matched IoU |
+|---:|---:|---:|---:|
+| 0.7582 | 0.7037 | 0.7299 | 0.7541 |
 
-The current smoke evaluation completed successfully against the smoke
-checkpoint and one validation batch:
+Counts: TP 7,790; FP 2,484; FN 3,280; predictions 10,274.
 
-```text
-score_threshold=0.05: precision=0.0 recall=0.0 f1=0.0 tp=0 fp=1 fn=8
-score_threshold=0.5: precision=0.0 recall=0.0 f1=0.0 tp=0 fp=0 fn=8
-```
+Artifact: `ml/runs/detection/orthodontic_plaque_part2_mvp_v2_test/evaluation_metrics.json`
 
-This is expected for an untrained smoke checkpoint. The result validates
-checkpoint loading, model inference, metric aggregation, and JSON output
-writing, not model quality.
-
-Bounded MVP evaluation command:
-
-```powershell
-ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.evaluate detection --config "ml\configs\orthodontic_plaque_detection_mvp_eval.toml"
-```
-
-Current bounded MVP validation result at IoU `0.5`:
-
-| Score threshold | Precision | Recall | F1 | TP | FP | FN | Predictions |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 0.050 | 0.0278 | 0.2816 | 0.0506 | 178 | 6222 | 454 | 6400 |
-| 0.075 | 0.0278 | 0.2816 | 0.0506 | 178 | 6222 | 454 | 6400 |
-| 0.100 | 0.0278 | 0.2816 | 0.0506 | 178 | 6222 | 454 | 6400 |
-| 0.125 | 0.0319 | 0.2627 | 0.0569 | 166 | 5041 | 466 | 5207 |
-| **0.150** | **0.0489** | **0.1361** | **0.0720** | **86** | **1671** | **546** | **1757** |
-| 0.175 | 0.0502 | 0.0348 | 0.0411 | 22 | 416 | 610 | 438 |
-| 0.200 | 0.0116 | 0.0016 | 0.0028 | 1 | 85 | 631 | 86 |
-| 0.225 | 0.0000 | 0.0000 | 0.0000 | 0 | 15 | 632 | 15 |
-| 0.250 | 0.0000 | 0.0000 | 0.0000 | 0 | 0 | 632 | 0 |
-
-The MVP inference threshold is `0.15` because it produced the highest measured
-validation F1 in this sweep. Compared with `0.05`, it reduced false positives
-and retained predictions by approximately 73%, while increasing precision and
-F1. Recall decreased from approximately 28% to 14%, so this is an MVP operating
-point rather than evidence of a high-quality detector. Raising the threshold to
-`0.175` produced only a small precision gain and reduced recall to approximately
-3%.
-
-These results show that the pipeline is learning a weak objectness signal, but
-the detector remains poorly calibrated after the intentionally bounded run.
-
-Reported fields include IoU threshold, score threshold, true positives, false
-positives, false negatives, precision, recall, F1, prediction count, target
-count, and mean matched IoU. These validation metrics are useful for engineering
-iteration, but they are not final held-out test metrics and are not diagnostic
-claims.
+The test result is a final measurement at the validation-selected operating point. It must not drive a threshold change.
 
 ## Inference
 
-The inference path runs checkpoint-backed prediction on a single image and
-writes a JSON artifact. It validates the checkpoint path, image file, extension,
-device setting, thresholds, prediction tensor shapes, score finiteness, label
-dtypes, and output path.
+Config: `ml/configs/orthodontic_plaque_detection_mvp_v2_predict.toml`
 
-Smoke prediction command:
+It fixes score threshold `0.65` and caps returned detections at 25.
 
 ```powershell
-ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.predict detection --config "ml\configs\orthodontic_plaque_detection_predict_smoke.toml" --image "ml\data\raw\orthodontic_plaque\v3\extracted\part-2\mendeley-dataset-materials_Part_2\data\images\patient0144\patient0144_20260118_bottom-left.jpg"
+ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.predict detection --config "ml\configs\orthodontic_plaque_detection_mvp_v2_predict.toml" --image "C:\path\to\image.jpg"
 ```
 
-Expected output:
-
-```text
-ml/runs/detection/orthodontic_plaque_part2_smoke_predictions/
-  patient0144_20260118_bottom-left.json
-```
-
-The current smoke prediction completed successfully with zero predictions at
-the configured `0.5` score threshold. That is expected for the untrained smoke
-checkpoint and validates the runtime path, not model quality.
-
-MVP prediction command:
-
-```powershell
-ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.predict detection --config "ml\configs\orthodontic_plaque_detection_mvp_predict.toml" --image "ml\data\raw\orthodontic_plaque\v3\extracted\part-2\mendeley-dataset-materials_Part_2\data\images\patient0144\patient0144_20260118_bottom-left.jpg"
-```
-
-The current MVP prediction completed successfully with `25` retained
-predictions at the configured `0.15` score threshold. This image still reaches
-the configured 25-detection cap because at least 25 candidate scores exceed the
-threshold. The validation-wide reduction in false positives therefore does not
-guarantee a smaller result on every image. Scores remain low after the
-intentionally bounded run, so these predictions are an integration artifact,
-not a reliable clinical output.
-
-## Security Controls
-
-- Dataset roots and manifest paths are validated before training.
-- Manifest image paths must be relative POSIX paths and resolve inside the
-  dataset root.
-- Checkpoint loads use PyTorch `weights_only=True`; the implementation fails
-  closed instead of falling back to unrestricted pickle loading.
-- Evaluation and inference reject checkpoints whose saved architecture contract
-  does not match the runtime config for class count or image-size policy.
-- Faster R-CNN default pretrained weights must already exist in the local Torch
-  cache; the project does not trigger hidden weight downloads during model
-  construction.
-- Output paths are constrained to named files inside the configured output
-  directory.
-- Existing symlink output files are rejected.
-- The training CLI reports concise errors instead of exposing stack traces for
-  normal validation failures.
-- Raw data, prepared manifests, checkpoints, and metrics are kept out of git by
-  project ignore rules.
+The backend ML launcher selects this same config. Prediction JSON is retained locally under the configured ignored run directory.
 
 ## Verification
 
-The training block is covered by tests for:
+The latest complete ML suite: `132 passed, 1 skipped`. The skip is limited to a Windows symbolic-link case when the current account lacks link-creation privileges; platform-independent containment tests still run.
 
-- Config parsing and validation failures.
-- Detection-target conversion from normalized boxes to pixel boxes.
-- Binary v1 label mapping from preserved publisher `class_id` values to
-  TorchVision foreground label `1`.
-- Detection collate behavior for variable image sizes.
-- Label bounds validation.
-- Output-path safety.
-- A tiny CPU training smoke path that writes checkpoint and metrics artifacts.
-- IoU matching, score filtering, empty prediction handling, evaluation config
-  validation, output-path safety, and a tiny evaluation smoke path.
-- One-image inference config validation, image validation, prediction filtering,
-  non-finite score rejection, label dtype validation, output-path safety, and a
-  tiny inference smoke path.
-- Shared model/checkpoint helpers, incompatible-checkpoint rejection, and direct
-  train/evaluate/predict CLI entrypoint JSON/error behavior.
-- Pretrained-weight cache policy for offline smoke runs and baseline runs that
-  use TorchVision default weights.
+Covered behavior includes manifest and path validation, normalized-box handling, training/evaluation/inference contracts, checkpoint safety, boundary clipping and degeneration, concise CLI errors, and regressions.
 
-Latest complete ML suite:
+## Limitations
 
-```text
-127 passed, 1 skipped
-```
+- one specialized dataset and task
+- bounded training rather than a comprehensive hyperparameter study
+- no external, multi-site, temporal, or prospective validation
+- no demographic or acquisition-device subgroup evidence
+- no calibration claim for detector confidence
+- incomplete characterization of image-quality and distribution-shift failures
+- annotations and source augmentation may encode dataset-specific conventions
 
-The skipped case requires Windows symbolic-link creation permission. The
-platform-independent path-containment tests still run.
-
-## Current Limitations
-
-- Full detection mAP and patient-level confidence intervals are a later block.
-- The held-out test split must remain untouched until final evaluation.
-- Validation loss is computed through the TorchVision training-loss path with
-  BatchNorm modules forced to eval mode during validation batches.
-- Part 1 is excluded because its nested 7z fails official integrity testing.
-- The training labels currently use a single foreground detection class plus
-  preserved tooth-position metadata for auditability.
+See [Dataset card](DATASET_CARD.md), [Architecture](ARCHITECTURE.md), and [ML guide](../ml/README.md).
