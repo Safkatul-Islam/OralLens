@@ -18,7 +18,12 @@ def default_ml_source_path() -> Path:
 
 
 def default_ml_detection_config_path() -> Path:
-    return default_project_root() / "ml" / "configs" / "orthodontic_plaque_detection_mvp_predict.toml"
+    return (
+        default_project_root()
+        / "ml"
+        / "configs"
+        / "orthodontic_plaque_detection_mvp_v2_predict.toml"
+    )
 
 
 def default_ml_temp_dir() -> Path:
