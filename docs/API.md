@@ -13,9 +13,9 @@ Interactive OpenAPI documentation is available at `/docs` while the server is ru
 | Mode | Default | Behavior |
 |---|---:|---|
 | `mock` | yes | Deterministic hash-based placeholder for API development and tests |
-| `ml` | no | Project-local v2 TorchVision plaque-candidate detector |
+| `ml` | no | Project-local v3 TorchVision plaque-candidate detector |
 
-`backend\scripts\run-ml-server.ps1` selects `ml` mode and the v2 prediction config. Application startup without that setting uses `mock` mode.
+`backend\scripts\run-ml-server.ps1` selects `ml` mode and the v3 prediction config. Application startup without that setting uses `mock` mode.
 
 ## Endpoints
 
@@ -55,34 +55,42 @@ Successful response: HTTP `201`
   "prediction": {
     "label": "possible_plaque",
     "display_name": "Possible plaque candidate",
-    "confidence": 0.96,
+    "confidence": 0.995,
     "severity": "medium",
     "is_mock": false,
-    "model_name": "orthodontic-plaque-mvp",
-    "prediction_count": 17,
+    "model_name": "orthodontic-plaque-mvp-v3",
+    "prediction_count": 15,
     "detections": [
       {
         "box_xyxy": [110.0, 72.0, 184.0, 131.0],
         "label": 1,
-        "score": 0.96
+        "score": 0.995
       }
     ]
   },
   "evidence": {
     "kind": "summary",
-    "summary": "Detected 17 plaque candidate(s) with the MVP detector."
+    "summary": "Detected 15 plaque candidate(s) with the MVP detector."
   },
   "report": {
     "title": "AI Screening Support Report",
-    "summary": "The current model pipeline marked this image as 'Possible plaque candidate' with 96% confidence.",
-    "limitations": ["This backend response is screening-support output, not a diagnosis."],
+    "summary": "The current model pipeline marked this image as 'Possible plaque candidate' with a maximum detector score of 0.995.",
+    "limitations": ["This backend response is screening-support output, not a diagnosis.", "Displayed scores are experimental ranking values, not calibrated clinical probabilities."],
     "recommended_next_steps": ["Consult a licensed dental professional for real symptoms or concerns."],
     "disclaimer": "OralLens AI is a learning project for screening support. It is not a medical device and does not provide diagnosis."
   }
 }
 ```
 
-The example is structural. Counts and scores depend on the input; confidence is the highest returned detector score, not a calibrated probability of disease.
+The example is structural. Counts and scores depend on the input. The API field remains named `confidence` for contract compatibility, but its value is the highest returned detector score—not a calibrated probability of disease.
+
+### Prediction score semantics
+
+`prediction.confidence` is the maximum score among boxes returned by active v3 after threshold `0.85` and the 25-result cap. The API returns that raw detector score without converting it into a disease probability. The frontend renders it to three decimals as `Detector score`, not as a percentage.
+
+V3 complete-validation and internal-test trustworthiness reports found substantial score-to-annotation-match reliability gaps: ECE `0.1940` and `0.1878`. Even high scores remain detector outputs tied to one dataset and task, not plaque probability, diagnostic confidence, severity, or clinical risk.
+
+The `severity` field is presentation metadata for this experimental report contract. It has not been clinically validated and must not be used for triage or treatment decisions. The wording and user interpretation still require future human-factors validation.
 
 ### `GET /scans`
 
@@ -146,6 +154,6 @@ This store is intended only for local demonstration. It has no authentication, e
 
 ## Verification
 
-The latest backend suite completed with `23 passed, 1 skipped`; the opt-in real backend-to-ML integration smoke completed with `1 passed`. A manual browser request through the real v2 detector returned HTTP `201` and rendered the returned boxes.
+The latest backend suite completed with `24 passed, 1 skipped`; the opt-in real backend-to-ML integration smoke completed with `1 passed`. A manual browser request through the real v3 detector returned HTTP `201`, exposed the v3 model identity, and rendered 15 returned boxes without converting the detector score into a percentage.
 
 See [Backend guide](../backend/README.md), [Architecture](ARCHITECTURE.md), and [Training and evaluation](TRAINING.md).
