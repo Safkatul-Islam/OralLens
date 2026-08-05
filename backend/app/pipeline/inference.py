@@ -171,6 +171,9 @@ class MLDetectionInferencePipeline:
             sys.path.insert(0, source_path)
 
     def _to_inference_result(self, result: object) -> InferenceResult:
+        model_name = getattr(result, "model_name", None)
+        if not isinstance(model_name, str) or not model_name.strip():
+            raise InferencePipelineError("ML inference result is missing a model name.")
         raw_predictions = getattr(result, "predictions", ())
         detections = tuple(
             DetectionCandidate(
@@ -200,7 +203,7 @@ class MLDetectionInferencePipeline:
             confidence=confidence,
             severity=severity,
             evidence_summary=evidence_summary,
-            model_name="orthodontic-plaque-mvp",
+            model_name=model_name,
             is_mock=False,
             detections=detections,
         )
