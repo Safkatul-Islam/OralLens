@@ -34,7 +34,7 @@ InferencePipeline protocol
      orallens_ml inference
           |
           v
-     Faster R-CNN checkpoint + v2 predict config
+     Faster R-CNN checkpoint + active v3 predict config
 ```
 
 ## Component responsibilities
@@ -46,7 +46,7 @@ InferencePipeline protocol
 | `ScanService` | Upload validation, hashing, inference orchestration, report construction | Framework startup and detector internals |
 | Inference adapters | Stable backend-to-inference contract; mock or ML implementation | HTTP responses and storage |
 | `JSONScanStore` | Atomic local scan-record persistence | Multi-user concurrency, authentication, regulated retention |
-| ML package | Dataset contracts, target conversion, model construction, training, evaluation, and prediction | Browser/API behavior |
+| ML package | Dataset contracts, target conversion, model construction, training, evaluation, trustworthiness reporting, and prediction | Browser/API behavior |
 | TOML configs | Reproducible experiment and inference parameters | Source data or secrets |
 
 ## Request lifecycle
@@ -57,7 +57,7 @@ InferencePipeline protocol
 4. The service hashes the validated bytes with SHA-256.
 5. The selected inference adapter runs:
    - `mock` returns a deterministic placeholder based on the input hash.
-   - `ml` writes a UUID-named temporary JPEG/PNG within the configured directory, loads the v2 inference config, runs the detector, and removes the temporary input in a `finally` block.
+   - `ml` writes a UUID-named temporary JPEG/PNG within the configured directory, loads the v3 inference config, runs the detector, and removes the temporary input in a `finally` block.
 6. The service converts inference output into typed prediction, evidence, report, limitation, and disclaimer schemas.
 7. `JSONScanStore` appends the record through a temporary-file replacement.
 8. The API returns HTTP `201`; the frontend renders metadata and overlays each `xyxy` detection box on the natural image coordinate system.
@@ -69,13 +69,13 @@ The backend uses typed `ORALLENS_` environment settings.
 | Mode | Selection | Intended use |
 |---|---|---|
 | `mock` | Default `ORALLENS_INFERENCE_MODE` | Fast API development and deterministic tests without loading Torch |
-| `ml` | Set by `backend\scripts\run-ml-server.ps1` or `.cmd` | Local GPU/CPU inference with the trained v2 detector |
+| `ml` | Set by `backend\scripts\run-ml-server.ps1` or `.cmd` | Local GPU/CPU inference with the trained v3 detector |
 
-The current default ML config boundary is:
+The current application ML config boundary is:
 
-`ml/configs/orthodontic_plaque_detection_mvp_v2_predict.toml`
+`ml/configs/orthodontic_plaque_detection_mvp_v3_predict.toml`
 
-That config points to the ignored local v2 checkpoint, fixes the score threshold at `0.65`, and caps returned detections at 25. Model promotion is performed through configuration/startup boundaries rather than route changes.
+That config points to the ignored local v3 best checkpoint, declares model identity `orthodontic-plaque-mvp-v3`, fixes the validation-selected score threshold at `0.85`, and caps returned detections at 25. Model promotion was performed through configuration/startup boundaries rather than route changes.
 
 ## ML architecture and data flow
 
@@ -92,13 +92,16 @@ patient-aware prepared manifest
         v
 TorchVision Dataset/DataLoader
         |
-        +-> training -> state-dict checkpoint + loss metrics
+        +-> training -> resumable last/best checkpoints + loss metrics
         +-> validation -> threshold sweep
-        +-> held-out test -> one frozen-threshold evaluation
+        +-> fixed-threshold internal test -> performance and descriptive audit
+        +-> trust reports -> deployment parity + reliability + failure evidence
         +-> prediction -> local JSON artifact
 ```
 
-The validation split selected threshold `0.65`. The held-out test used exactly that threshold and must not be used for further tuning.
+For v3, the validation split selected threshold `0.85`. The internal test benchmark used exactly that threshold and did not drive retuning. Because this cohort has been examined across model generations, a new independently sourced cohort is required for stronger external evidence.
+
+Separate v3 trustworthiness configs reference the v3 evaluation and prediction configs. They compare uncapped evaluation with the active application policy (`0.85`, IoU `0.5`, maximum 25 detections), retain per-image and per-patient evidence, and hash the checkpoint, manifest, and configs. The cap affected no validation image and one internal test image, where it removed one false positive.
 
 ## Trust and security boundaries
 
@@ -124,17 +127,22 @@ The validation split selected threshold `0.65`. The held-out test used exactly t
 - Derived corners may exceed the boundary only within the documented `1e-6` tolerance, after which boxes are clipped and rechecked for positive area.
 - Grossly invalid or degenerate boxes fail closed.
 - Shared target-validation failures are translated into evaluation-domain errors so expected contract failures do not expose raw tracebacks.
-- Validation chooses the operating point; the test split measures it once.
+- Validation chooses the operating point; locked evaluation and later descriptive audits use the same frozen policy and do not drive tuning.
+- Trustworthiness runs require complete splits and deterministic dataset error handling.
+- Generated reports distinguish score-to-annotation-match reliability from disease probability and clinical calibration.
 
 ### API and browser
 
 - CORS uses explicit local origins: `http://127.0.0.1:5173` and `http://localhost:5173`.
 - Error handlers return structured messages and request IDs without exposing internal exception details.
 - The UI repeats the non-diagnostic limitations and directs health concerns to a licensed professional.
+- The API's compatibility field `confidence` is the maximum detector score. The UI labels it as a detector score, renders it without percentage conversion, and states that it is not a clinical probability.
 
 ## Persistence and artifacts
 
-`JSONScanStore` is a local demonstration store under `backend/var`. ML checkpoints, metrics, predictions, and prepared/raw data live under ignored `ml` directories. These artifacts support reproducibility and local evidence, but are not committed because they may be large, machine-specific, or derived from restricted data.
+`JSONScanStore` is a local demonstration store under `backend/var`. ML checkpoints, metrics, predictions, trustworthiness reports, and prepared/raw data live under ignored `ml` directories. These artifacts support reproducibility and local evidence, but are not committed because they may be large, machine-specific, or derived from restricted data.
+
+Trustworthiness reports are written atomically to dedicated validation and test run directories. They contain identifiers, boxes, match outcomes, and hashes, but do not copy source image bytes. Historical aggregate evaluation artifacts remain separate and are not overwritten.
 
 The current storage design has no authentication, encryption-at-rest policy, retention controls, audit log, database migrations, or multi-process coordination. It must not be used for sensitive clinical records.
 
@@ -154,7 +162,7 @@ Unexpected failures remain observable to developers through controlled logging, 
 
 The current system is a local portfolio MVP, not a production deployment design. Before broader use, the architecture would need at least authenticated access, encrypted and policy-governed storage, explicit data retention, observability, rate limiting, worker/process-safe persistence, packaged model/version provenance, environment separation, backup/recovery, and independent security review.
 
-Clinical or regulated use would additionally require a defined intended use, representative multi-site evidence, risk management, human-factors work, monitoring, quality systems, and applicable regulatory review. Those are outside the current project claim.
+Clinical or regulated use would additionally require a defined intended use, representative positive and negative multi-site evidence, a fit-for-purpose dental reference standard, external and prospective validation, risk management, human-factors work, monitoring, quality systems, and applicable regulatory review. Those are outside the current project claim. The staged boundary is defined in [Intended use and claims](INTENDED_USE_AND_CLAIMS.md) and [Clinical evidence plan](CLINICAL_EVIDENCE_PLAN.md).
 
 ## Related documents
 
@@ -163,6 +171,9 @@ Clinical or regulated use would additionally require a defined intended use, rep
 - [API contract](API.md)
 - [Training and evaluation](TRAINING.md)
 - [Dataset card](DATASET_CARD.md)
+- [Intended use and claims](INTENDED_USE_AND_CLAIMS.md)
+- [Clinical evidence plan](CLINICAL_EVIDENCE_PLAN.md)
+- [Data acquisition and annotation](DATA_ACQUISITION_AND_ANNOTATION.md)
 - [Data acquisition](DATA_ACQUISITION.md)
 - [ML environment](ML_ENVIRONMENT.md)
 - [Backend guide](../backend/README.md)
