@@ -27,9 +27,9 @@ flowchart LR
     VAL --> MODE{Inference mode}
     MODE -->|mock| MOCK[Deterministic mock adapter]
     MODE -->|ml| ADAPTER[ML detection adapter]
-    ADAPTER --> CFG[v2 predict TOML]
+    ADAPTER --> CFG[v3 predict TOML]
     CFG --> DET[TorchVision Faster R-CNN]
-    DET --> CKPT[v2 state-dict checkpoint]
+    DET --> CKPT[v3 best checkpoint]
     MOCK --> REPORT[Prediction, evidence, and report]
     DET --> REPORT
     REPORT --> STORE[Local JSON scan store]
@@ -38,7 +38,7 @@ flowchart LR
     FE --> UI[Metadata, report, and box overlay]
 ```
 
-The browser-facing runtime and the offline model-development lifecycle meet at one boundary: the v2 prediction config and checkpoint selected by the backend ML adapter.
+The browser-facing runtime and offline model development meet at a configuration boundary. The application currently selects v3 through backend typed settings and the real-ML startup scripts.
 
 ## Runtime request pipeline
 
@@ -105,7 +105,7 @@ flowchart TD
     CHOICE -->|ml| ML[MLDetectionInferencePipeline]
     MOCK --> RESULT[InferenceResult]
     ML --> TEMP[Constrained temporary JPEG or PNG]
-    TEMP --> CONFIG[Load v2 prediction config]
+    TEMP --> CONFIG[Load v3 prediction config]
     CONFIG --> RUN[run_detection_inference]
     RUN --> RESULT
     TEMP -->|finally| DELETE[Remove temporary input]
@@ -139,14 +139,15 @@ Owners:
 
 - inference config and execution: [`ml/src/orallens_ml/inference/detection.py`](../ml/src/orallens_ml/inference/detection.py)
 - model construction and checkpoint safety: [`ml/src/orallens_ml/modeling/detection.py`](../ml/src/orallens_ml/modeling/detection.py)
-- active config: [`ml/configs/orthodontic_plaque_detection_mvp_v2_predict.toml`](../ml/configs/orthodontic_plaque_detection_mvp_v2_predict.toml)
+- active config: [`ml/configs/orthodontic_plaque_detection_mvp_v3_predict.toml`](../ml/configs/orthodontic_plaque_detection_mvp_v3_predict.toml)
 
 The inference pipeline validates the image/config/checkpoint paths, chooses CUDA when `device = "auto"` and CUDA is available, builds Faster R-CNN with ResNet-50 FPN, and loads the project state dictionary with `weights_only=True`.
 
 The active operating point is:
 
-- score threshold: `0.65`
+- score threshold: `0.85`
 - maximum returned detections: `25`
+- model identity: `orthodontic-plaque-mvp-v3`
 - class `0`: background
 - class `1`: plaque candidate
 
@@ -168,7 +169,7 @@ The backend derives:
 - report summary
 - limitations, next steps, and disclaimer
 
-Detector confidence is not described as a calibrated probability of disease.
+The API compatibility field `confidence` contains a detector ranking score. Reports describe it as a maximum detector score, and the UI renders it to three decimals with an explicit “not a clinical probability” qualifier rather than percentage conversion.
 
 ### 8. Persist the scan record
 
@@ -213,12 +214,14 @@ flowchart TD
     AUDIT --> MANIFEST[Patient-aware prepared manifest]
     MANIFEST --> DATASET[OrthodonticPlaquePart2Dataset]
     DATASET --> TARGET[Normalized center-size to bounded xyxy]
-    TARGET --> TRAIN[Train split: v2 bounded training]
-    TRAIN --> CKPT[checkpoint_last.pt and loss metrics]
+    TARGET --> TRAIN[Train split: v3 full-coverage training]
+    TRAIN --> CKPT[resumable last and best checkpoints plus loss metrics]
     CKPT --> VAL[Full validation threshold sweep]
-    VAL -->|select 0.65| FREEZE[Frozen operating point]
-    FREEZE --> TEST[One held-out test evaluation]
-    FREEZE --> PREDICT[v2 prediction config]
+    VAL -->|select 0.85| FREEZE[Frozen v3 operating point]
+    FREEZE --> TEST[Fixed-threshold internal test benchmark]
+    FREEZE --> PREDICT[v3 active prediction config]
+    PREDICT --> TRUSTVAL[Validation trustworthiness report]
+    TEST --> TRUSTTEST[Frozen test trustworthiness report]
     PREDICT --> BACKEND[Backend ML startup boundary]
 ```
 
@@ -251,9 +254,9 @@ Owners:
 
 - CLI: [`ml/src/orallens_ml/cli/train.py`](../ml/src/orallens_ml/cli/train.py)
 - implementation: [`ml/src/orallens_ml/training/detection.py`](../ml/src/orallens_ml/training/detection.py)
-- config: [`ml/configs/orthodontic_plaque_detection_mvp_v2.toml`](../ml/configs/orthodontic_plaque_detection_mvp_v2.toml)
+- config: [`ml/configs/orthodontic_plaque_detection_mvp_v3.toml`](../ml/configs/orthodontic_plaque_detection_mvp_v3.toml)
 
-The v2 run uses train samples for optimizer steps and a bounded validation subset for loss monitoring. It writes a state-dict checkpoint and epoch metrics under the ignored run directory.
+The v3 run uses every training and validation image in each of three epochs. It writes atomic last/best checkpoints after every completed epoch, including model, optimizer, RNG, config, and metric state required for safe interruption recovery. Fresh runs reject existing output artifacts rather than silently overwriting an experiment.
 
 ### Validation and threshold selection
 
@@ -261,25 +264,46 @@ Owners:
 
 - CLI: [`ml/src/orallens_ml/cli/evaluate.py`](../ml/src/orallens_ml/cli/evaluate.py)
 - implementation: [`ml/src/orallens_ml/evaluation/detection.py`](../ml/src/orallens_ml/evaluation/detection.py)
-- config: [`ml/configs/orthodontic_plaque_detection_mvp_v2_eval.toml`](../ml/configs/orthodontic_plaque_detection_mvp_v2_eval.toml)
+- config: [`ml/configs/orthodontic_plaque_detection_mvp_v3_eval.toml`](../ml/configs/orthodontic_plaque_detection_mvp_v3_eval.toml)
 
-The evaluator processes the complete validation split across predefined score thresholds at IoU `0.5`. Threshold `0.65` produced the highest tested validation F1 and became the frozen operating point.
+The evaluator processes the complete validation split across predefined score thresholds at IoU `0.5`. Threshold `0.85` produced the highest tested v3 validation F1 (`0.7776`) and became the frozen operating point. No finer search was performed.
 
-### Held-out test
+### Fixed-threshold internal test
 
-Config: [`ml/configs/orthodontic_plaque_detection_mvp_v2_test.toml`](../ml/configs/orthodontic_plaque_detection_mvp_v2_test.toml)
+Config: [`ml/configs/orthodontic_plaque_detection_mvp_v3_test.toml`](../ml/configs/orthodontic_plaque_detection_mvp_v3_test.toml)
 
-The held-out config fixes split `test`, threshold `0.65`, IoU `0.5`, and no batch cap. Test metrics measure the already selected operating point and must not retune it.
+The v3 test config fixes split `test`, threshold `0.85`, IoU `0.5`, and no batch cap. It produced F1 `0.7795` without retuning. Because the cohort has been examined for v2 and v3, it is an internal benchmark rather than a new external validation cohort.
+
+### Trustworthiness reporting
+
+Owners:
+
+- implementation: [`ml/src/orallens_ml/evaluation/trustworthiness.py`](../ml/src/orallens_ml/evaluation/trustworthiness.py)
+- validation config: [`ml/configs/orthodontic_plaque_detection_mvp_v3_trust_validation.toml`](../ml/configs/orthodontic_plaque_detection_mvp_v3_trust_validation.toml)
+- fixed-threshold test config: [`ml/configs/orthodontic_plaque_detection_mvp_v3_trust_test.toml`](../ml/configs/orthodontic_plaque_detection_mvp_v3_trust_test.toml)
+
+The trustworthiness evaluator references the existing evaluation and prediction configs instead of duplicating the operating policy. It records:
+
+- deployed 25-result cap versus uncapped metrics
+- per-image and per-patient TP, FP, FN, and matched IoU
+- score-to-match ECE, MCE, Brier score, and reliability bins
+- structured high-score false positives and false-negative image identifiers
+- SHA-256 identities for checkpoint, manifest, and configs
+- runtime, model, split, threshold, IoU, and coordinate-space metadata
+
+No v3 validation image reached the 25-result cap. One test image exceeded it by one false positive. Validation and test score-to-match ECE were `0.1940` and `0.1878`, worse than v2 despite stronger detection metrics. These values measure whether displayed boxes match annotations under the declared policy; they are not disease-probability calibration.
 
 ### Promotion to the application
 
 Promotion changes configuration, not API routes:
 
-1. a trained checkpoint is selected by the v2 predict config
-2. backend defaults point to that config
+1. a trained checkpoint and validation-selected threshold are fixed in a prediction config
+2. backend defaults and startup scripts point to the promoted config
 3. real-ML startup scripts set `ORALLENS_INFERENCE_MODE=ml`
 4. backend integration tests exercise the adapter and real checkpoint
 5. the browser consumes the unchanged `ScanRecord` response contract
+
+V3 promotion is complete. The backend default, PowerShell and CMD launchers, prediction model identity, integration smoke, full test suites, frontend build, and browser E2E all verify the unchanged application contract against the v3 checkpoint.
 
 ## Configuration map
 
@@ -291,10 +315,12 @@ Promotion changes configuration, not API routes:
 | ML source path | `ORALLENS_ML_SOURCE_PATH` | backend ML adapter |
 | ML prediction config | `ORALLENS_ML_DETECTION_CONFIG_PATH` | backend ML adapter |
 | temporary input directory | `ORALLENS_ML_TEMP_DIR` | backend ML adapter |
-| training experiment | `orthodontic_plaque_detection_mvp_v2.toml` | training CLI |
-| validation sweep | `orthodontic_plaque_detection_mvp_v2_eval.toml` | evaluation CLI |
-| frozen test | `orthodontic_plaque_detection_mvp_v2_test.toml` | evaluation CLI |
-| local inference | `orthodontic_plaque_detection_mvp_v2_predict.toml` | prediction CLI and backend |
+| v3 training experiment | `orthodontic_plaque_detection_mvp_v3.toml` | training CLI |
+| v3 validation sweep | `orthodontic_plaque_detection_mvp_v3_eval.toml` | evaluation CLI |
+| v3 fixed-threshold internal test | `orthodontic_plaque_detection_mvp_v3_test.toml` | evaluation CLI |
+| v3 active application inference | `orthodontic_plaque_detection_mvp_v3_predict.toml` | prediction CLI and backend ML adapter |
+| v3 validation trust report | `orthodontic_plaque_detection_mvp_v3_trust_validation.toml` | trustworthiness evaluation CLI |
+| v3 test trust report | `orthodontic_plaque_detection_mvp_v3_trust_test.toml` | trustworthiness evaluation CLI |
 
 ## Artifact map
 
@@ -302,11 +328,14 @@ Promotion changes configuration, not API routes:
 |---|---|---|
 | raw and extracted data | `ml/data/raw/...` | ignored |
 | prepared manifest | `ml/data/prepared/.../manifest.csv` | ignored |
-| v2 checkpoint | `ml/runs/detection/orthodontic_plaque_part2_mvp_v2/checkpoint_last.pt` | ignored |
-| training metrics | `ml/runs/detection/orthodontic_plaque_part2_mvp_v2/metrics.json` | ignored |
-| validation metrics | `ml/runs/detection/orthodontic_plaque_part2_mvp_v2_eval/evaluation_metrics.json` | ignored |
-| held-out metrics | `ml/runs/detection/orthodontic_plaque_part2_mvp_v2_test/evaluation_metrics.json` | ignored |
-| prediction JSON | `ml/runs/detection/orthodontic_plaque_part2_mvp_v2_predictions/` | ignored |
+| historical v2 checkpoint | `ml/runs/detection/orthodontic_plaque_part2_mvp_v2/checkpoint_last.pt` | ignored |
+| active v3 last/best checkpoints | `ml/runs/detection/orthodontic_plaque_part2_mvp_v3/checkpoint_*.pt` | ignored |
+| v3 training metrics | `ml/runs/detection/orthodontic_plaque_part2_mvp_v3/metrics.json` | ignored |
+| v3 validation metrics | `ml/runs/detection/orthodontic_plaque_part2_mvp_v3_eval/evaluation_metrics.json` | ignored |
+| v3 internal test metrics | `ml/runs/detection/orthodontic_plaque_part2_mvp_v3_test/evaluation_metrics.json` | ignored |
+| v3 validation trust report | `ml/runs/detection/orthodontic_plaque_part2_mvp_v3_trust_validation/trustworthiness_report.json` | ignored |
+| v3 test trust report | `ml/runs/detection/orthodontic_plaque_part2_mvp_v3_trust_test/trustworthiness_report.json` | ignored |
+| v3 prediction JSON | `ml/runs/detection/orthodontic_plaque_part2_mvp_v3_predictions/` | ignored |
 | local scan records | `backend/var/scans.json` | ignored |
 | temporary ML uploads | `backend/var/ml-inputs/` | ignored and deleted after each inference |
 | frontend production build | `frontend/dist/` | ignored |
@@ -324,7 +353,7 @@ Ignored artifacts remain local evidence. They are not silently deleted, committe
 | Dataset | UTF-8/CSV/JSON contract, finite values, normalized fields, path containment, symlink/file checks |
 | Boxes | tolerance-bounded clipping, positive-area revalidation, gross-invalid rejection |
 | Checkpoint | expected path, state-dict contract, `weights_only=True`, compatibility validation |
-| Evaluation | validation-selected threshold, frozen test, concise domain errors |
+| Evaluation | validation-selected threshold, frozen test, concise domain errors, complete-split trust reports, provenance hashes |
 | API errors | request IDs, stable envelope, no internal traceback/path disclosure |
 | Persistence | local atomic replacement; explicitly not production storage |
 
@@ -334,10 +363,10 @@ Ignored artifacts remain local evidence. They are not silently deleted, committe
 |---|---|
 | backend routes, CORS, uploads, errors, storage | `backend/tests/test_scans.py`, `test_health.py`, `test_hardening.py` |
 | backend adapter and real ML smoke | `backend/tests/test_inference_contract.py`, `test_ml_integration_smoke.py` |
-| backend v2 config boundary | `backend/tests/test_config.py` |
+| backend v3 config and model-identity boundary | `backend/tests/test_config.py` |
 | acquisition, archives, manifests, splits, audits | `ml/tests/test_acquisition.py`, `test_archive.py`, `test_manifest.py`, `test_splits.py`, `test_audit.py` |
 | Part 2 preparation and runtime dataset | `ml/tests/test_orthodontic_plaque.py`, `test_orthodontic_plaque_dataset.py` |
-| model, training, evaluation, inference | `ml/tests/test_detection_modeling.py`, `test_detection_training.py`, `test_detection_evaluation.py`, `test_detection_inference.py` |
+| model, training, evaluation, trustworthiness, inference | `ml/tests/test_detection_modeling.py`, `test_detection_training.py`, `test_detection_evaluation.py`, `test_detection_trustworthiness.py`, `test_detection_inference.py` |
 | CLI contracts and concise failures | `ml/tests/test_dataset_cli.py`, `test_ml_cli_entrypoints.py` |
 | frontend | TypeScript production build and manual browser E2E; automated interaction/accessibility coverage remains pending |
 
@@ -351,7 +380,7 @@ Ignored artifacts remain local evidence. They are not silently deleted, committe
 | persistence implementation | `backend/app/storage.py` behind the existing service boundary |
 | mock behavior | `backend/app/pipeline/inference.py` |
 | backend model selection | typed config and startup scripts, not routes |
-| score threshold | validation evidence first, then predict/test config policy; never tune from held-out test |
+| score threshold | validation evidence first, then predict/test config policy; never tune from a locked evaluation cohort |
 | detector architecture | `ml/src/orallens_ml/modeling/detection.py` plus configs and model tests |
 | annotation policy | dataset loader/target conversion plus dataset and training tests |
 | evaluation metric or matching | `ml/src/orallens_ml/evaluation/detection.py` plus evaluation tests |
@@ -364,5 +393,8 @@ Ignored artifacts remain local evidence. They are not silently deleted, committe
 - [API](API.md) — HTTP contracts and client-visible errors
 - [Training and evaluation](TRAINING.md) — experiment evidence and metrics
 - [Dataset card](DATASET_CARD.md) — provenance, splits, policy, and limitations
+- [Intended use and claims](INTENDED_USE_AND_CLAIMS.md) — claim boundary and staged research target
+- [Clinical evidence plan](CLINICAL_EVIDENCE_PLAN.md) — external and prospective evidence plan
+- [Data acquisition and annotation](DATA_ACQUISITION_AND_ANNOTATION.md) — future clinical data contract
 - [ML environment](ML_ENVIRONMENT.md) — local dependency and runtime setup
 - [Root project guide](../README.md) — project-level entry point
