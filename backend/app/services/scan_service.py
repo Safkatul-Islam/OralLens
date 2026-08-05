@@ -132,22 +132,24 @@ class ScanService:
         return safe_name or "uploaded-image"
 
     def _build_report(self, prediction: InferenceResult) -> ReportResponse:
-        confidence_percent = round(prediction.confidence * 100)
+        score_label = "mock score" if prediction.is_mock else "maximum detector score"
+        formatted_score = f"{prediction.confidence:.3f}"
         mode = "mock pipeline" if prediction.is_mock else "model pipeline"
         return ReportResponse(
             title="AI Screening Support Report",
             summary=(
                 f"The current {mode} marked this image as "
-                f"'{prediction.display_name}' with {confidence_percent}% confidence."
+                f"'{prediction.display_name}' with a {score_label} of {formatted_score}."
             ),
             limitations=[
                 "This backend response is screening-support output, not a diagnosis.",
                 "The current MVP model is not clinically validated.",
                 "Image quality, lighting, angle, and framing can strongly affect screening quality.",
+                "Displayed scores are experimental ranking values, not calibrated clinical probabilities.",
                 "The result is not a dental diagnosis or treatment recommendation.",
             ],
             recommended_next_steps=[
-                "Review the uploaded image and confidence score.",
+                "Review the uploaded image and the displayed score's limitations.",
                 "Review any returned detection boxes as experimental model evidence.",
                 "Consult a licensed dental professional for real symptoms or concerns.",
             ],
