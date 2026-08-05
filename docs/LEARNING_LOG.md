@@ -64,18 +64,56 @@ Planning-era documents had drifted from the working product. The documentation w
 
 **Lesson:** stale documentation can misrepresent a good implementation. Each fact needs an explicit documentary owner and links instead of duplicated promises.
 
+## 11. Measure the deployed policy, not only the model
+
+The original evaluator measured all predictions above threshold, while application inference also applies a 25-result cap. A separate trustworthiness evaluator now references both historical evaluation config and deployed prediction config, retains per-image and per-patient evidence, and records checkpoint, manifest, config, runtime, and GPU provenance.
+
+No validation or internal-test image reached the cap, so deployed and uncapped aggregate metrics are identical. Score-to-match ECE was `0.0949` on validation and `0.0971` on the then-designated frozen internal test split. Scores below `0.9` were overconfident as annotation-match indicators, patient-level F1 varied materially, and dark brightness-down samples repeatedly appeared among the largest false-negative cases. Blur also appeared in the internal test failure set.
+
+The held-out trustworthiness pass used the exact frozen model, threshold, IoU, and cap for descriptive evidence only. It did not select or modify an operating point.
+
+**Lesson:** trustworthy evaluation requires deployment-policy parity, provenance, stratified evidence, and visible failure cases. A detector score can be measured against annotation matching without being promoted to a disease probability or clinical-confidence claim.
+
+## 12. Increase training coverage without confusing optimization with evidence
+
+The v2 configuration used three epochs but capped each epoch at 512 of 3,834 training images and 64 of 468 validation images. V3 preserved the architecture, optimizer, seed, and epoch count while removing those caps. It also added atomic per-epoch last/best checkpoints and genuine resume state for the model, optimizer, and RNG.
+
+V3 improved the internal test benchmark from F1 `0.7299` to `0.7795`, recall from `0.7037` to `0.7923`, and mean matched IoU from `0.7541` to `0.8102`. Validation and internal test F1 were similar (`0.7776` and `0.7795`).
+
+The improvement had a tradeoff: test score-to-match ECE worsened from `0.0971` to `0.1878`. V3 is a better annotation-matching detector, but its raw scores are less reliable as match probabilities.
+
+**Lesson:** more complete optimization can improve localization and recall without improving calibration. Accuracy, calibration, patient variation, and clinical meaning must be evaluated separately.
+
+## 13. Treat stronger medical claims as an evidence-design problem
+
+The current dataset has 5,160 images and 65,238 annotations but only 74 patient groups. Every manifest row has at least one positive annotation, and the data come from one specialized source with transformed variants. Those properties prevent clinical specificity, negative predictive value, multi-site generalization, and clinical-utility claims regardless of how many additional epochs are run.
+
+The next phase was therefore defined claim-first: narrow the intended use, appoint dental/statistical/governance owners, establish a fit-for-purpose reference standard, collect representative positive and negative multi-site data, isolate calibration and external test cohorts, and evaluate the human-AI team before considering assistance claims.
+
+**Lesson:** a stronger model metric does not authorize a stronger medical claim. Claims must be pre-specified and supported by representative, independent, clinically meaningful evidence.
+
+## 14. Promote model identity and score meaning together
+
+V3 was promoted through the backend's typed config and PowerShell/CMD startup boundaries without changing routes or response schemas. The inference config now carries an explicit validated model name through prediction artifacts, the adapter, stored scan records, tests, and the UI. Real checkpoint integration, full suites, the frontend build, and a browser scan verified the promoted path.
+
+The first v3 browser check also exposed a trust issue: a raw detector score near `0.995` was rounded and displayed as `100% confidence`. The UI now shows a three-decimal `Detector score`, explicitly states that it is not a clinical probability, and the generated report uses the same ranking-score interpretation.
+
+**Lesson:** model promotion is incomplete if users cannot identify the deployed model or if presentation turns an uncalibrated ranking value into an implied probability.
+
 ## Current verified state
 
 - end-to-end GPU-backed MVP: working
-- ML suite: `132 passed, 1 skipped`
-- backend suite: `23 passed, 1 skipped`
+- ML suite: `150 passed, 1 skipped`
+- backend suite: `24 passed, 1 skipped`
 - real backend-to-ML smoke: `1 passed`
 - frontend build and manual UI flow: passed
-- v2 validation and frozen held-out artifacts: retained locally
+- v2 historical and v3 full-coverage validation/test/trust artifacts: retained locally
+- active application runtime: v3 at validation-selected threshold `0.85`
+- UI/report score semantics: raw detector ranking value, not a percentage or clinical probability
 
 ## Next learning phase
 
-The next goal is measurable trust: analyze failure modes, score calibration, image-quality robustness, dataset/source stratification, privacy boundaries, model provenance, and human oversight. These steps can strengthen an experimental prototype, but clinical trust would still require representative external evidence and appropriate independent review.
+The next goal is a claim-aligned clinical evidence foundation: define the target use and population, establish the dental reference standard and statistical plan, secure governance before collection, acquire representative positive/negative multi-site data, and reserve a new external evaluation boundary before v4 development. Controlled robustness, calibration, unsupported-input behavior, privacy, and human oversight remain required parts of that plan.
 
 ## Related documents
 
@@ -83,4 +121,7 @@ The next goal is measurable trust: analyze failure modes, score calibration, ima
 - [Project brief](PROJECT_BRIEF.md)
 - [Dataset card](DATASET_CARD.md)
 - [Training and evaluation](TRAINING.md)
+- [Intended use and claims](INTENDED_USE_AND_CLAIMS.md)
+- [Clinical evidence plan](CLINICAL_EVIDENCE_PLAN.md)
+- [Data acquisition and annotation](DATA_ACQUISITION_AND_ANNOTATION.md)
 - [Root project guide](../README.md)
