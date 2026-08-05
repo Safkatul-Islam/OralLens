@@ -57,25 +57,25 @@ Run from the repository root.
 Training:
 
 ```powershell
-ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.train detection-baseline --config "ml\configs\orthodontic_plaque_detection_mvp_v2.toml"
+ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.train detection-baseline --config "ml\configs\orthodontic_plaque_detection_mvp_v3.toml"
 ```
 
 Validation sweep:
 
 ```powershell
-ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.evaluate detection --config "ml\configs\orthodontic_plaque_detection_mvp_v2_eval.toml"
+ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.evaluate detection --config "ml\configs\orthodontic_plaque_detection_mvp_v3_eval.toml"
 ```
 
-Frozen held-out test:
+Fixed-threshold internal test:
 
 ```powershell
-ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.evaluate detection --config "ml\configs\orthodontic_plaque_detection_mvp_v2_test.toml"
+ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.evaluate detection --config "ml\configs\orthodontic_plaque_detection_mvp_v3_test.toml"
 ```
 
 Prediction:
 
 ```powershell
-ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.predict detection --config "ml\configs\orthodontic_plaque_detection_mvp_v2_predict.toml" --image "C:\path\to\image.jpg"
+ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.predict detection --config "ml\configs\orthodontic_plaque_detection_mvp_v3_predict.toml" --image "C:\path\to\image.jpg"
 ```
 
 Test suite:
@@ -90,7 +90,7 @@ The following are local, reproducible evidence rather than repository source:
 
 - raw and prepared datasets under `ml/data`
 - trained checkpoints and loss metrics under `ml/runs/detection/...`
-- validation and held-out evaluation metrics
+- validation and fixed-threshold internal evaluation metrics
 - prediction JSON output
 - package caches such as `ml/.uv-cache`
 
@@ -100,19 +100,20 @@ They are excluded by the root `.gitignore`. Do not commit data, checkpoints, run
 
 Latest completed checks:
 
-- ML suite: `132 passed, 1 skipped`
-- v2 training: completed
+- ML suite: `150 passed, 1 skipped`
+- v3 full-coverage training: completed
 - complete validation threshold sweep: completed
-- frozen held-out test: completed
-- representative v2 prediction: completed
+- fixed-threshold internal test: completed
+- representative v3 prediction: completed with 15 detections and explicit v3 model identity
 - real backend-to-ML smoke: `1 passed`
+- frontend build and manual browser-to-v3 flow: passed
 
 The Windows skip is limited to symbolic-link creation permissions.
 
 ## Reproducibility notes
 
 - configs use repository-root-relative data and output paths
-- v2 training seed is `20260711`
+- v3 preserves training seed `20260711`
 - workers are fixed at zero for the current Windows/GPU experiment
 - the threshold is selected on validation and frozen for test/inference
 - checkpoint, config, dataset version, and metrics artifact must be reported together
