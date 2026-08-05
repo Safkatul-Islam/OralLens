@@ -16,7 +16,7 @@ The project addresses a common portfolio gap: many ML demonstrations stop at a n
 
 As a local user, I can upload a JPEG or PNG oral image and receive:
 
-- a screening-support label and detector confidence
+- a screening-support label and explicitly non-probabilistic detector score
 - candidate plaque bounding boxes
 - a concise evidence summary
 - an automatically structured report
@@ -29,24 +29,28 @@ As a local user, I can upload a JPEG or PNG oral image and receive:
 - deterministic mock mode for lightweight development
 - project-local TorchVision Faster R-CNN inference adapter
 - verified Part 2 orthodontic-plaque dataset with patient-aware splits
-- reproducible training, full-validation threshold selection, frozen held-out evaluation, and prediction CLIs
+- reproducible v1-v3 training, full-validation threshold selection, fixed-threshold internal evaluation, and prediction CLIs
+- deployment-parity, score-reliability, provenance, patient-level, and failure-case reporting
 - strict input, path, annotation, checkpoint, and output validation
 - local JSON scan persistence and ignored ML evidence artifacts
 - automated ML and backend suites, real integration smoke test, frontend build, and manual browser E2E verification
 
 ## Evidence of completion
 
-The v2 detector improved training and validation loss over three bounded epochs. Its `0.65` score threshold was selected on all 468 validation images and then evaluated once on 858 held-out test images.
+V3 replaced the capped v2 development experiment with three complete train/validation epochs and durable last/best training-state checkpoints. Its `0.85` score threshold was selected on all 468 validation images and then measured for v3 on the 858-image internal test benchmark. The threshold was not retuned from test results. Because the same test cohort has now been examined across model generations, it is not pristine external evidence. V3 is now active in the local application through the existing typed configuration and startup-script boundary.
 
 | Evidence | Result |
 |---|---|
-| Full validation at threshold `0.65`, IoU `0.5` | precision `0.7652`, recall `0.7516`, F1 `0.7583` |
-| Held-out test at frozen threshold, IoU `0.5` | precision `0.7582`, recall `0.7037`, F1 `0.7299` |
-| ML test suite | `132 passed, 1 skipped` |
-| Backend test suite | `23 passed, 1 skipped` |
+| V3 full validation at threshold `0.85`, IoU `0.5` | precision `0.7629`, recall `0.7929`, F1 `0.7776` |
+| V3 internal test benchmark at frozen threshold, IoU `0.5` | precision `0.7671`, recall `0.7923`, F1 `0.7795` |
+| V3 deployment cap impact | `0` validation images; `1` test image and `1` false positive truncated |
+| V3 score-to-match ECE | validation `0.1940`; internal test `0.1878` |
+| V3 patient-level F1 range | validation `0.6769-0.9245`; internal test `0.6824-0.8889` |
+| ML test suite | `150 passed, 1 skipped` |
+| Backend test suite | `24 passed, 1 skipped` |
 | Real backend-to-ML integration | `1 passed` |
 | Frontend production build | passed |
-| Manual browser E2E | passed |
+| Manual browser E2E | v3 identity, 15 detections/overlays, report, limitations, and raw detector-score wording passed |
 
 These measurements describe annotation matching on this dataset. They do not measure disease diagnosis, patient outcomes, or clinical safety.
 
@@ -70,35 +74,43 @@ These measurements describe annotation matching on this dataset. They do not mea
 - mobile capture guidance or image-quality scoring
 - additional oral conditions unsupported by verified data
 
-## Next phase: measurable trust
+## Measurable-trust milestone
 
-The remaining work is not to soften disclaimers; it is to generate stronger evidence and safer system behavior. The next phase should prioritize:
+The v3 trustworthiness reports evaluate the candidate policy at score threshold `0.85`, IoU `0.5`, and maximum 25 detections. No validation image reached the cap. One internal test image exceeded it by one false positive, producing a negligible aggregate change.
 
-1. structured error and false-positive/false-negative review
-2. calibration analysis and honest interpretation of detector scores
-3. robustness evaluation across image quality, framing, rotation, and acquisition variation
-4. subgroup or source-stratified analysis where valid metadata exists
-5. dataset lineage, exclusion, and boundary-policy reporting
-6. model/version provenance and reproducible evaluation summaries
-7. privacy, authentication, retention, observability, and deployment threat modeling before any external hosting
-8. documented human oversight and clear escalation when images are unsupported or unreliable
+The reports retain per-image and per-patient match evidence, structured failure cases, score-to-match reliability bins, and SHA-256 identities for the checkpoint, manifest, and configs. V3 improved internal detection metrics over v2, but score-to-match ECE worsened to `0.1940` on validation and `0.1878` on test. Detector scores remain ranking values, not disease probabilities.
 
-This can make OralLens AI more trustworthy as an experimental research prototype. It would still not establish clinical validity without representative studies and appropriate independent review.
+## Next phase: claim-first clinical evidence
+
+The remaining work is not another long run on the same 74 patients. The next phase should prioritize:
+
+1. freeze a narrow research target, intended user, population, acquisition protocol, output, and clinical action
+2. appoint dental, statistical, and data-governance owners before clinical collection
+3. define a fit-for-purpose reference standard and adjudication workflow
+4. collect representative positive, negative, confounding, multi-site, and real acquisition-quality cases
+5. reserve separate development, calibration, external test, and prospective cohorts
+6. develop v4 without accessing the new locked evaluation boundary
+7. report external diagnostic-accuracy evidence transparently before considering a human-AI study
+
+The target is an externally validated, dentist-supervised research system. A diagnostic or medical-device claim remains a later evidence and regulatory question.
 
 ## Success criteria for the next milestone
 
-- reliability claims are tied to reproducible artifacts and defined datasets
-- known failure modes are categorized and visible
-- confidence presentation does not imply calibrated disease probability
-- unsupported inputs and low-quality conditions fail or warn explicitly
-- model, config, threshold, dataset, and evaluation provenance are traceable
-- security and privacy gaps are explicit before deployment decisions
-- documentation remains synchronized with executable behavior
+- intended use and claim wording are frozen before data design
+- data governance and usage rights are approved before collection
+- sample size is justified at the patient level
+- positive, negative, hard-negative, site, device, and subgroup coverage are measurable
+- clinician reference labels, disagreements, and adjudication are traceable
+- no patient, site, encounter, or derived image leaks across protected boundaries
+- external evaluation is pre-specified and reported with patient-level uncertainty
 
 ## References
 
 - [Architecture](ARCHITECTURE.md)
 - [Training and evaluation](TRAINING.md)
 - [Dataset card](DATASET_CARD.md)
+- [Intended use and claims](INTENDED_USE_AND_CLAIMS.md)
+- [Clinical evidence plan](CLINICAL_EVIDENCE_PLAN.md)
+- [Data acquisition and annotation](DATA_ACQUISITION_AND_ANNOTATION.md)
 - [API contract](API.md)
 - [Root project guide](../README.md)
