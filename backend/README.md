@@ -38,20 +38,20 @@ backend/
 `ORALLENS_INFERENCE_MODE` accepts:
 
 - `mock` — default deterministic placeholder for lightweight development and tests
-- `ml` — v2 TorchVision plaque-candidate detector through the project-local ML package
+- `ml` — v3 TorchVision plaque-candidate detector through the project-local ML package
 
-The default v2 ML config is:
+The default v3 ML config is:
 
-`ml/configs/orthodontic_plaque_detection_mvp_v2_predict.toml`
+`ml/configs/orthodontic_plaque_detection_mvp_v3_predict.toml`
 
 The backend does not hard-code checkpoint logic in routes. Model selection remains behind typed configuration and the inference adapter.
 
-## Run with the real v2 detector
+## Run with the real v3 detector
 
 Prerequisites:
 
 - project-local `ml/.venv` with backend and ML runtime dependencies
-- local v2 checkpoint at the path referenced by the prediction config
+- local v3 checkpoint at the path referenced by the prediction config
 - prepared project-local data only when running the integration smoke
 
 From the repository root:
@@ -60,7 +60,7 @@ From the repository root:
 powershell -NoProfile -ExecutionPolicy Bypass -File backend\scripts\run-ml-server.ps1
 ```
 
-The script selects `ml` mode, uses the v2 config, and starts Uvicorn on `http://127.0.0.1:8000`.
+The script selects `ml` mode, uses the v3 config, and starts Uvicorn on `http://127.0.0.1:8000`.
 
 ## Run in mock mode
 
@@ -82,7 +82,7 @@ Settings use the `ORALLENS_` prefix and may be loaded from a local `.env`, which
 | `ORALLENS_MAX_UPLOAD_BYTES` | `5242880` | upload-size boundary |
 | `ORALLENS_STORAGE_PATH` | `backend/var/scans.json` | local record store |
 | `ORALLENS_ML_SOURCE_PATH` | `ml/src` | project-local ML import boundary |
-| `ORALLENS_ML_DETECTION_CONFIG_PATH` | v2 predict config | checkpoint and inference settings |
+| `ORALLENS_ML_DETECTION_CONFIG_PATH` | v3 predict config | checkpoint, model identity, and inference settings |
 | `ORALLENS_ML_TEMP_DIR` | `backend/var/ml-inputs` | constrained temporary inputs |
 | `ORALLENS_LOG_LEVEL` | `INFO` | application logging level |
 
@@ -111,9 +111,9 @@ Complete backend suite from the repository root:
 ml\.venv\Scripts\python.exe -B -m pytest backend\tests
 ```
 
-Latest result: `23 passed, 1 skipped`. The skip is the opt-in real-model integration test.
+Latest result: `24 passed, 1 skipped`. The skip is the opt-in real-model integration test.
 
-Run that smoke explicitly when the dataset, v2 checkpoint, and GPU/CPU ML runtime are available:
+Run that smoke explicitly when the dataset, v3 checkpoint, and GPU/CPU ML runtime are available:
 
 ```powershell
 $env:ORALLENS_RUN_ML_INTEGRATION = "1"
@@ -122,7 +122,7 @@ ml\.venv\Scripts\python.exe -B -m pytest backend\tests\test_ml_integration_smoke
 
 Latest real integration result: `1 passed`.
 
-Coverage includes uploads, signature mismatches, size limits, filenames, storage, schemas, configured/unconfigured CORS behavior, ML adapter selection, unsupported ML input, cleanup, error boundaries, and real checkpoint-backed output.
+Coverage includes uploads, signature mismatches, size limits, filenames, storage, schemas, configured/unconfigured CORS behavior, ML adapter selection, explicit model identity, detector-score semantics, unsupported ML input, cleanup, error boundaries, and real checkpoint-backed output.
 
 ## Local data and production boundary
 
