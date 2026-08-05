@@ -44,9 +44,12 @@ The complete manifest audit found two affected annotations in one test image. Th
 - v2 seed: `20260711`
 - patient-aware split assignments remain fixed
 - validation selects the score threshold
-- held-out test uses one frozen threshold and is not used for retuning
+- each fixed-threshold internal test uses the validation-selected operating point and is not used for retuning
 - generated checkpoints, metrics, predictions, and data are local ignored artifacts
 - evaluator errors translate shared target-validation failures into concise evaluation-domain failures
+- v3 writes atomic last/best training-state checkpoints after every completed epoch
+- v3 resume restores model, optimizer, and RNG state and rejects incompatible configs or external output paths
+- fresh training rejects existing final artifacts instead of silently overwriting an experiment
 
 Run commands below from the repository root with the project-local ML environment.
 
@@ -108,7 +111,7 @@ Local outputs:
 - `ml/runs/detection/orthodontic_plaque_part2_mvp_v2/checkpoint_last.pt`
 - `ml/runs/detection/orthodontic_plaque_part2_mvp_v2/metrics.json`
 
-## Full-validation threshold selection
+## V2 full-validation threshold selection
 
 Config: `ml/configs/orthodontic_plaque_detection_mvp_v2_eval.toml`
 
@@ -130,7 +133,7 @@ At `0.65`: TP 4,562; FP 1,400; FN 1,508; prediction count 5,962; mean matched Io
 
 The selected threshold was copied to the prediction and held-out test configs before test evaluation.
 
-## Frozen held-out evaluation
+## V2 fixed-threshold test evaluation
 
 Config: `ml/configs/orthodontic_plaque_detection_mvp_v2_test.toml`
 
@@ -152,32 +155,217 @@ Artifact: `ml/runs/detection/orthodontic_plaque_part2_mvp_v2_test/evaluation_met
 
 The test result is a final measurement at the validation-selected operating point. It must not drive a threshold change.
 
-## Inference
+## V2 trustworthiness evaluation
 
-Config: `ml/configs/orthodontic_plaque_detection_mvp_v2_predict.toml`
+The trustworthiness evaluator measured the then-application-facing v2 policy without changing the frozen model or threshold. It references the historical evaluation configs and v2 prediction config, then compares score threshold `0.65`, IoU `0.5`, and maximum 25 detections per image with the uncapped evaluator.
 
-It fixes score threshold `0.65` and caps returned detections at 25.
+Validation config: `ml/configs/orthodontic_plaque_detection_mvp_v2_trust_validation.toml`
 
 ```powershell
-ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.predict detection --config "ml\configs\orthodontic_plaque_detection_mvp_v2_predict.toml" --image "C:\path\to\image.jpg"
+ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.evaluate detection-trustworthiness --config "ml\configs\orthodontic_plaque_detection_mvp_v2_trust_validation.toml"
 ```
 
-The backend ML launcher selects this same config. Prediction JSON is retained locally under the configured ignored run directory.
+Frozen test config: `ml/configs/orthodontic_plaque_detection_mvp_v2_trust_test.toml`
+
+```powershell
+ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.evaluate detection-trustworthiness --config "ml\configs\orthodontic_plaque_detection_mvp_v2_trust_test.toml"
+```
+
+| Evidence | Validation | Frozen test |
+|---|---:|---:|
+| Images | 468 | 858 |
+| Patients | 7 | 12 |
+| Displayed predictions | 5,962 | 10,274 |
+| Cap-affected images | 0 | 0 |
+| Truncated predictions | 0 | 0 |
+| Score-to-match ECE | 0.0949 | 0.0971 |
+| Score-to-match MCE | 0.2331 | 0.2245 |
+| Score-to-match Brier score | 0.1640 | 0.1708 |
+| Patient-level F1 range | 0.6950-0.8951 | 0.6332-0.8675 |
+
+Because no image reached 25 displayed detections, deployed and uncapped precision, recall, F1, counts, and matched IoU are identical to the historical aggregate results.
+
+### Score-to-match reliability
+
+Each displayed prediction is labeled correct only when it matches one available annotation of the same class under score-ordered, one-to-one matching at IoU `0.5`. Equal-width bins then compare mean detector score with empirical box-match rate.
+
+| Displayed score range | Validation mean score | Validation match rate | Test mean score | Test match rate |
+|---|---:|---:|---:|---:|
+| 0.65-0.70 | 0.6746 | 0.4416 | 0.6751 | 0.4507 |
+| 0.70-0.80 | 0.7515 | 0.5458 | 0.7535 | 0.5843 |
+| 0.80-0.90 | 0.8545 | 0.7335 | 0.8554 | 0.7464 |
+| 0.90-1.00 | 0.9438 | 0.9392 | 0.9441 | 0.9188 |
+
+The similar validation and test pattern shows that scores below `0.9` are overconfident as annotation-match indicators. The highest bin is closer to its empirical match rate. This is conditional score reliability among displayed boxes, not comprehensive object-detector calibration and never a probability of plaque, disease, clinical risk, or patient outcome.
+
+### Failure and provenance evidence
+
+- Dark brightness-down samples repeatedly appeared among images with the most false negatives on validation and test.
+- Blur appeared among the largest held-out false-negative cases.
+- Some highest-score false positives narrowly missed IoU `0.5`; others had almost no annotated overlap.
+- Patient-level variation is substantial and is not visible in aggregate F1 alone.
+- Reports record SHA-256 identities for the checkpoint, manifest, evaluation config, inference config, and trust config, plus runtime and GPU versions.
+- Reports retain identifiers, boxes, matching outcomes, and coordinate-space metadata without copying source image bytes.
+
+Local ignored artifacts:
+
+- `ml/runs/detection/orthodontic_plaque_part2_mvp_v2_trust_validation/trustworthiness_report.json`
+- `ml/runs/detection/orthodontic_plaque_part2_mvp_v2_trust_test/trustworthiness_report.json`
+
+## v3 full-coverage experiment
+
+Config: `ml/configs/orthodontic_plaque_detection_mvp_v3.toml`
+
+V2 processed 512 training batches and 64 validation batches per epoch. V3 preserves the v2 architecture, optimizer, seed, image sizes, and three-epoch budget while removing both caps. Each epoch therefore processes all 3,834 training images and all 468 validation images. V3 starts fresh from the official pretrained TorchVision weights; it is not a continuation of v2.
+
+Key settings:
+
+| Setting | Value |
+|---|---:|
+| Epochs | 3 |
+| Batch size | 1 |
+| Learning rate | 0.005 |
+| Momentum | 0.9 |
+| Weight decay | 0.0005 |
+| Training batches per epoch | 3,834 |
+| Validation batches per epoch | 468 |
+| Workers | 0 |
+| Device | automatic |
+
+Command:
+
+```powershell
+ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.train detection-baseline --config "ml\configs\orthodontic_plaque_detection_mvp_v3.toml"
+```
+
+Training completed in approximately 73 minutes 56 seconds on the local RTX 4070 Laptop GPU.
+
+| Epoch | Training loss | Validation loss |
+|---:|---:|---:|
+| 1 | 0.7727 | 0.7848 |
+| 2 | 0.6232 | 0.7451 |
+| 3 | 0.5418 | 0.6757 |
+
+Both losses decreased through epoch 3. The lowest validation loss occurred at epoch 3, so `checkpoint_best.pt` and `checkpoint_last.pt` contain the same model state. The checkpoint SHA-256 recorded after training was:
+
+```text
+0782117A3B3F868F5DB941D3D54D2988A46BEBC9DD7B5DA75BF0414CE55F987F
+```
+
+Local ignored outputs:
+
+- `ml/runs/detection/orthodontic_plaque_part2_mvp_v3/checkpoint_last.pt`
+- `ml/runs/detection/orthodontic_plaque_part2_mvp_v3/checkpoint_best.pt`
+- `ml/runs/detection/orthodontic_plaque_part2_mvp_v3/metrics.json`
+
+The general training checkpoint includes the model state, optimizer state, completed epoch, metrics, device type, and CPU/CUDA RNG state. It is loaded with `weights_only=True`. This supports interruption recovery; it does not make an old model checkpoint a clinically validated model.
+
+### V3 validation threshold selection
+
+Config: `ml/configs/orthodontic_plaque_detection_mvp_v3_eval.toml`
+
+```powershell
+ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.evaluate detection --config "ml\configs\orthodontic_plaque_detection_mvp_v3_eval.toml"
+```
+
+The complete 468-image validation split selected score threshold `0.85` at IoU `0.5`. The tested peak was broad: threshold `0.80` produced F1 `0.7771`, only `0.0005` below the `0.85` result. No finer search was performed.
+
+| Threshold | Precision | Recall | F1 |
+|---:|---:|---:|---:|
+| 0.80 | 0.7304 | 0.8301 | 0.7771 |
+| **0.85** | **0.7629** | **0.7929** | **0.7776** |
+| 0.90 | 0.8040 | 0.7392 | 0.7702 |
+
+At `0.85`: TP 4,813; FP 1,496; FN 1,257; predictions 6,309; mean matched IoU `0.8034`.
+
+Compared with the selected v2 validation point, v3 changed:
+
+- precision: `-0.0023`
+- recall: `+0.0414`
+- F1: `+0.0193`
+- mean matched IoU: `+0.0547`
+
+The selected threshold was copied to the v3 prediction and test configs before the v3 test run.
+
+### V3 fixed-threshold internal test benchmark
+
+Config: `ml/configs/orthodontic_plaque_detection_mvp_v3_test.toml`
+
+```powershell
+ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.evaluate detection --config "ml\configs\orthodontic_plaque_detection_mvp_v3_test.toml"
+```
+
+The fixed-threshold run covered all 858 test images and 11,070 targets at score threshold `0.85` and IoU `0.5`.
+
+| Precision | Recall | F1 | Mean matched IoU |
+|---:|---:|---:|---:|
+| 0.7671 | 0.7923 | 0.7795 | 0.8102 |
+
+Counts: TP 8,771; FP 2,663; FN 2,299; predictions 11,434.
+
+Compared with v2 on the same internal cohort, v3 improved precision by `0.0089`, recall by `0.0886`, F1 by `0.0496`, and mean matched IoU by `0.0561`, with 981 fewer false negatives.
+
+Artifact: `ml/runs/detection/orthodontic_plaque_part2_mvp_v3_test/evaluation_metrics.json`
+
+The test did not change the threshold or model. However, the cohort has now been inspected for v2 and v3. It remains useful as an internal fixed-policy benchmark, but it is not a pristine external evaluation boundary for future model generations or medical claims.
+
+### V3 trustworthiness evidence
+
+Validation config: `ml/configs/orthodontic_plaque_detection_mvp_v3_trust_validation.toml`
+
+Test config: `ml/configs/orthodontic_plaque_detection_mvp_v3_trust_test.toml`
+
+| Evidence | Validation | Internal test benchmark |
+|---|---:|---:|
+| Images | 468 | 858 |
+| Patients | 7 | 12 |
+| Uncapped predictions | 6,309 | 11,434 |
+| Cap-affected images | 0 | 1 |
+| Truncated predictions | 0 | 1 false positive |
+| Score-to-match ECE | 0.1940 | 0.1878 |
+| Score-to-match MCE | 0.4290 | 0.4046 |
+| Score-to-match Brier score | 0.2075 | 0.2035 |
+| Patient-level F1 range | 0.6769-0.9245 | 0.6824-0.8889 |
+
+The cap removed one false positive and no true positive on the single affected test image. Aggregate deployed-cap F1 was `0.7795` after rounding, effectively identical to uncapped F1.
+
+V3's ECE, MCE, and Brier score are worse than v2's despite better precision, recall, F1, matched IoU, and internal patient-level test bounds. This is an explicit tradeoff: v3 is the stronger detector, but its raw scores are more overconfident as annotation-match indicators.
+
+Dark, blurred, and rotated variants remain recurring false-negative or false-positive cases. These source-dataset variants identify robustness hypotheses; they do not quantify real multi-clinic acquisition performance.
+
+Local ignored artifacts:
+
+- `ml/runs/detection/orthodontic_plaque_part2_mvp_v3_trust_validation/trustworthiness_report.json`
+- `ml/runs/detection/orthodontic_plaque_part2_mvp_v3_trust_test/trustworthiness_report.json`
+
+## Inference
+
+Active v3 config: `ml/configs/orthodontic_plaque_detection_mvp_v3_predict.toml`
+
+It declares model identity `orthodontic-plaque-mvp-v3`, fixes score threshold `0.85`, and caps returned detections at 25.
+
+```powershell
+ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.predict detection --config "ml\configs\orthodontic_plaque_detection_mvp_v3_predict.toml" --image "C:\path\to\image.jpg"
+```
+
+Prediction JSON is retained locally under the configured ignored run directory. The backend default and both ML launchers select this v3 config. Promotion was verified with the real checkpoint integration smoke, full backend and ML suites, frontend build, and manual browser scan.
 
 ## Verification
 
-The latest complete ML suite: `132 passed, 1 skipped`. The skip is limited to a Windows symbolic-link case when the current account lacks link-creation privileges; platform-independent containment tests still run.
+The latest complete ML suite: `150 passed, 1 skipped`. The skip is limited to a Windows symbolic-link case when the current account lacks link-creation privileges; platform-independent containment tests still run.
 
 Covered behavior includes manifest and path validation, normalized-box handling, training/evaluation/inference contracts, checkpoint safety, boundary clipping and degeneration, concise CLI errors, and regressions.
 
 ## Limitations
 
 - one specialized dataset and task
-- bounded training rather than a comprehensive hyperparameter study
+- only 74 patient groups despite thousands of images and annotations
+- every current manifest row contains positive annotations, so the dataset cannot estimate clinical specificity or NPV in a representative negative population
 - no external, multi-site, temporal, or prospective validation
 - no demographic or acquisition-device subgroup evidence
-- no calibration claim for detector confidence
-- incomplete characterization of image-quality and distribution-shift failures
+- score-to-match reliability is measured only for displayed in-dataset predictions; comprehensive calibration across location, scale, and shift remains incomplete
+- dark/blur failure signals are identified, but controlled image-quality and distribution-shift characterization remains pending
 - annotations and source augmentation may encode dataset-specific conventions
+- the internal test cohort is no longer a pristine evidence boundary for future model generations
 
-See [Dataset card](DATASET_CARD.md), [Architecture](ARCHITECTURE.md), and [ML guide](../ml/README.md).
+See [Dataset card](DATASET_CARD.md), [Intended use and claims](INTENDED_USE_AND_CLAIMS.md), [Clinical evidence plan](CLINICAL_EVIDENCE_PLAN.md), and [ML guide](../ml/README.md).
