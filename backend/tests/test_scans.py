@@ -48,6 +48,16 @@ def test_create_scan_accepts_valid_png_upload(tmp_path):
     assert payload["prediction"]["model_name"] == "deterministic-mock-v1"
     assert payload["prediction"]["prediction_count"] == 0
     assert payload["prediction"]["detections"] == []
+    assert "mock score of 0." in payload["report"]["summary"]
+    assert "% confidence" not in payload["report"]["summary"]
+    assert any(
+        "not calibrated clinical probabilities" in limitation
+        for limitation in payload["report"]["limitations"]
+    )
+    assert any(
+        "displayed score's limitations" in next_step
+        for next_step in payload["report"]["recommended_next_steps"]
+    )
     assert payload["report"]["disclaimer"]
 
 

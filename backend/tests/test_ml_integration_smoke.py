@@ -30,15 +30,15 @@ DEFAULT_CONFIG_PATH = (
     PROJECT_ROOT
     / "ml"
     / "configs"
-    / "orthodontic_plaque_detection_mvp_v2_predict.toml"
+    / "orthodontic_plaque_detection_mvp_v3_predict.toml"
 )
 DEFAULT_CHECKPOINT_PATH = (
     PROJECT_ROOT
     / "ml"
     / "runs"
     / "detection"
-    / "orthodontic_plaque_part2_mvp_v2"
-    / "checkpoint_last.pt"
+    / "orthodontic_plaque_part2_mvp_v3"
+    / "checkpoint_best.pt"
 )
 DEFAULT_ML_SOURCE_PATH = PROJECT_ROOT / "ml" / "src"
 
@@ -90,7 +90,7 @@ def test_backend_ml_mode_returns_model_backed_detections(tmp_path: Path) -> None
     payload = response.json()
     prediction = payload["prediction"]
     assert prediction["is_mock"] is False
-    assert prediction["model_name"] == "orthodontic-plaque-mvp"
+    assert prediction["model_name"] == "orthodontic-plaque-mvp-v3"
     assert prediction["prediction_count"] > 0
     assert prediction["prediction_count"] == len(prediction["detections"])
     assert not any(temp_dir.iterdir())
