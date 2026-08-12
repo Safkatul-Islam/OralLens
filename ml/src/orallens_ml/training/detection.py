@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import math
+import shutil
 import tomllib
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,7 +27,7 @@ from orallens_ml.modeling.detection import (
     DetectionModelConfig,
     DetectionModelError,
     create_fasterrcnn_resnet50_fpn as create_detection_model,
-    save_detection_checkpoint,
+    validate_checkpoint_compatibility,
 )
 
 DeviceName = Literal["auto", "cpu", "cuda"]
@@ -35,6 +37,25 @@ WeightsName = Literal["none", "default"]
 # therefore produce derived corners just outside the image by half a rounding
 # unit even when every source center/size value remains valid.
 _NORMALIZED_BOX_BOUNDARY_TOLERANCE = 1e-6
+_LAST_CHECKPOINT_FILENAME = "checkpoint_last.pt"
+_BEST_CHECKPOINT_FILENAME = "checkpoint_best.pt"
+_METRICS_FILENAME = "metrics.json"
+_RESUME_COMPATIBILITY_FIELDS = (
+    "batch_size",
+    "dataset_root",
+    "image_max_size",
+    "image_min_size",
+    "learning_rate",
+    "manifest_path",
+    "max_train_batches",
+    "max_validation_batches",
+    "momentum",
+    "num_classes",
+    "pretrained_weights",
+    "seed",
+    "trainable_backbone_layers",
+    "weight_decay",
+)
 
 
 class DetectionTrainingError(ValueError):
@@ -63,6 +84,7 @@ class DetectionTrainingConfig:
     seed: int
     max_train_batches: int | None = None
     max_validation_batches: int | None = None
+    resume_checkpoint_path: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,8 +102,19 @@ class TrainingRunResult:
     """Files and metrics produced by a training run."""
 
     checkpoint_path: Path
+    best_checkpoint_path: Path
     metrics_path: Path
     metrics: tuple[EpochMetrics, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _ResumeState:
+    completed_epoch: int
+    best_validation_loss: float
+    metrics: tuple[EpochMetrics, ...]
+    torch_rng_state: Tensor
+    cuda_rng_state_all: tuple[Tensor, ...]
+    device_type: str
 
 
 def load_detection_training_config(config_path: Path) -> DetectionTrainingConfig:
@@ -125,6 +158,10 @@ def load_detection_training_config(config_path: Path) -> DetectionTrainingConfig
         seed=_non_negative_int(training, "seed"),
         max_train_batches=_optional_positive_int(training, "max_train_batches"),
         max_validation_batches=_optional_positive_int(training, "max_validation_batches"),
+        resume_checkpoint_path=_optional_path_value(
+            training,
+            "resume_checkpoint_path",
+        ),
     )
 
 
@@ -146,6 +183,8 @@ def make_detection_target(
         raise DetectionTrainingError(f"Invalid box tensor for sample: {target.sample_id}")
     if labels.ndim != 1 or labels.shape[0] != boxes.shape[0]:
         raise DetectionTrainingError(f"Invalid label tensor for sample: {target.sample_id}")
+    if labels.dtype != torch.int64:
+        raise DetectionTrainingError(f"Source labels must use int64: {target.sample_id}")
     if boxes.numel() == 0:
         raise DetectionTrainingError(f"Sample has no boxes: {target.sample_id}")
     normalized_boxes = boxes.to(dtype=torch.float32)
@@ -164,21 +203,27 @@ def make_detection_target(
         raise DetectionTrainingError(f"Normalized boxes have invalid extents: {target.sample_id}")
     if num_classes != 2:
         raise DetectionTrainingError("The plaque detector requires num_classes=2")
-    if torch.any(labels < 0):
-        raise DetectionTrainingError(f"Source labels are outside configured classes: {target.sample_id}")
+    if torch.any((labels != 0) & (labels != 1)):
+        raise DetectionTrainingError(
+            f"Source plaque-presence labels must be 0 or 1: {target.sample_id}"
+        )
 
+    foreground_boxes = normalized_boxes[labels == 1]
     scale = torch.tensor([width, height, width, height], dtype=torch.float32)
-    pixel_boxes = normalized_boxes * scale
+    pixel_boxes = foreground_boxes * scale
     area = (pixel_boxes[:, 2] - pixel_boxes[:, 0]) * (
         pixel_boxes[:, 3] - pixel_boxes[:, 1]
     )
-    foreground_labels = torch.ones_like(labels, dtype=torch.int64)
+    foreground_labels = torch.ones(
+        (foreground_boxes.shape[0],),
+        dtype=torch.int64,
+    )
     return {
         "boxes": pixel_boxes,
         "labels": foreground_labels,
         "image_id": torch.tensor([image_id], dtype=torch.int64),
         "area": area.to(dtype=torch.float32),
-        "iscrowd": torch.zeros((boxes.shape[0],), dtype=torch.int64),
+        "iscrowd": torch.zeros((foreground_boxes.shape[0],), dtype=torch.int64),
     }
 
 
@@ -210,6 +255,15 @@ def run_detection_training(
 
     _validate_training_inputs(config)
     _prepare_output_dir(config.output_dir)
+    checkpoint_path = _safe_output_file(config.output_dir, _LAST_CHECKPOINT_FILENAME)
+    best_checkpoint_path = _safe_output_file(config.output_dir, _BEST_CHECKPOINT_FILENAME)
+    metrics_path = _safe_output_file(config.output_dir, _METRICS_FILENAME)
+    if config.resume_checkpoint_path is None:
+        _require_fresh_training_outputs(
+            checkpoint_path,
+            best_checkpoint_path,
+            metrics_path,
+        )
     torch.manual_seed(config.seed)
     device = _select_device(config.device)
     train_loader = _build_loader(config, split="train", shuffle=True)
@@ -226,7 +280,25 @@ def run_detection_training(
     )
 
     metrics: list[EpochMetrics] = []
-    for epoch in range(1, config.epochs + 1):
+    start_epoch = 1
+    best_validation_loss = math.inf
+    if config.resume_checkpoint_path is not None:
+        resume_state = _load_training_checkpoint(
+            config=config,
+            model=model,
+            optimizer=optimizer,
+            device=device,
+        )
+        metrics.extend(resume_state.metrics)
+        start_epoch = resume_state.completed_epoch + 1
+        best_validation_loss = resume_state.best_validation_loss
+        _restore_rng_state(resume_state, device=device)
+        if start_epoch > config.epochs:
+            raise DetectionTrainingError(
+                "Resume checkpoint already completed the configured number of epochs"
+            )
+
+    for epoch in range(start_epoch, config.epochs + 1):
         train_loss = _run_loss_epoch(
             model,
             train_loader,
@@ -243,37 +315,273 @@ def run_detection_training(
             num_classes=config.num_classes,
             max_batches=config.max_validation_batches,
         )
-        metrics.append(
-            EpochMetrics(
-                epoch=epoch,
-                train_loss=train_loss,
-                validation_loss=validation_loss,
-                learning_rate=optimizer.param_groups[0]["lr"],
-            )
+        epoch_metric = EpochMetrics(
+            epoch=epoch,
+            train_loss=train_loss,
+            validation_loss=validation_loss,
+            learning_rate=optimizer.param_groups[0]["lr"],
         )
-
-    checkpoint_path = _safe_output_file(config.output_dir, "checkpoint_last.pt")
-    metrics_path = _safe_output_file(config.output_dir, "metrics.json")
-    metric_payload = [_metric_for_json(metric) for metric in metrics]
-    save_detection_checkpoint(
-        model=model,
-        path=checkpoint_path,
-        config=_config_for_json(config),
-        metrics=metric_payload,
-    )
-    metrics_path.write_text(
-        json.dumps(
-            {"metrics": metric_payload},
-            indent=2,
-            sort_keys=True,
-        ),
-        encoding="utf-8",
-    )
+        metrics.append(epoch_metric)
+        is_best = validation_loss < best_validation_loss
+        if is_best:
+            best_validation_loss = validation_loss
+        metric_payload = [_metric_for_json(metric) for metric in metrics]
+        _save_training_checkpoint(
+            model=model,
+            optimizer=optimizer,
+            checkpoint_path=checkpoint_path,
+            config=config,
+            metrics=metric_payload,
+            completed_epoch=epoch,
+            best_validation_loss=best_validation_loss,
+            device=device,
+        )
+        if is_best:
+            _atomic_copy(checkpoint_path, best_checkpoint_path)
+        _write_metrics(
+            metrics_path,
+            metrics=metric_payload,
+            best_validation_loss=best_validation_loss,
+        )
     return TrainingRunResult(
         checkpoint_path=checkpoint_path,
+        best_checkpoint_path=best_checkpoint_path,
         metrics_path=metrics_path,
         metrics=tuple(metrics),
     )
+
+
+def _save_training_checkpoint(
+    *,
+    model: Module,
+    optimizer: torch.optim.Optimizer,
+    checkpoint_path: Path,
+    config: DetectionTrainingConfig,
+    metrics: Sequence[Mapping[str, object]],
+    completed_epoch: int,
+    best_validation_loss: float,
+    device: torch.device,
+) -> None:
+    payload = {
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "config": _config_for_json(config),
+        "metrics": list(metrics),
+        "training_state": {
+            "completed_epoch": completed_epoch,
+            "best_validation_loss": best_validation_loss,
+            "device_type": device.type,
+            "torch_rng_state": torch.get_rng_state(),
+            "cuda_rng_state_all": (
+                torch.cuda.get_rng_state_all() if device.type == "cuda" else []
+            ),
+        },
+    }
+    _atomic_torch_save(payload, checkpoint_path)
+
+
+def _load_training_checkpoint(
+    *,
+    config: DetectionTrainingConfig,
+    model: Module,
+    optimizer: torch.optim.Optimizer,
+    device: torch.device,
+) -> _ResumeState:
+    path = config.resume_checkpoint_path
+    if path is None:
+        raise DetectionTrainingError("Resume checkpoint path is missing")
+    _validate_resume_checkpoint_path(path, output_dir=config.output_dir)
+    try:
+        payload = torch.load(path, map_location="cpu", weights_only=True)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise DetectionTrainingError(f"Could not load resume checkpoint: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise DetectionTrainingError("Resume checkpoint payload must be a dictionary")
+
+    checkpoint_config = payload.get("config")
+    if not isinstance(checkpoint_config, dict):
+        raise DetectionTrainingError("Resume checkpoint is missing config")
+    try:
+        validate_checkpoint_compatibility(
+            checkpoint_config=checkpoint_config,
+            runtime_config=DetectionModelConfig.from_runtime_config(config),
+        )
+    except DetectionModelError as exc:
+        raise DetectionTrainingError(str(exc)) from exc
+    _validate_resume_config(checkpoint_config, config=config)
+
+    model_state = payload.get("model_state_dict")
+    optimizer_state = payload.get("optimizer_state_dict")
+    if not isinstance(model_state, dict):
+        raise DetectionTrainingError("Resume checkpoint is missing model_state_dict")
+    if not isinstance(optimizer_state, dict):
+        raise DetectionTrainingError("Resume checkpoint is missing optimizer_state_dict")
+    try:
+        model.load_state_dict(model_state)
+        optimizer.load_state_dict(optimizer_state)
+    except (RuntimeError, ValueError) as exc:
+        raise DetectionTrainingError(f"Resume checkpoint state is incompatible: {exc}") from exc
+
+    training_state = payload.get("training_state")
+    if not isinstance(training_state, dict):
+        raise DetectionTrainingError("Resume checkpoint is missing training_state")
+    completed_epoch = training_state.get("completed_epoch")
+    best_validation_loss = training_state.get("best_validation_loss")
+    device_type = training_state.get("device_type")
+    torch_rng_state = training_state.get("torch_rng_state")
+    cuda_rng_state_all = training_state.get("cuda_rng_state_all")
+    if isinstance(completed_epoch, bool) or not isinstance(completed_epoch, int):
+        raise DetectionTrainingError("Resume checkpoint completed_epoch is invalid")
+    if completed_epoch < 1 or completed_epoch > config.epochs:
+        raise DetectionTrainingError("Resume checkpoint completed_epoch is out of range")
+    if (
+        isinstance(best_validation_loss, bool)
+        or not isinstance(best_validation_loss, (int, float))
+        or not math.isfinite(float(best_validation_loss))
+    ):
+        raise DetectionTrainingError("Resume checkpoint best validation loss is invalid")
+    if device_type != device.type:
+        raise DetectionTrainingError(
+            "Resume checkpoint device type does not match the selected runtime device"
+        )
+    if not isinstance(torch_rng_state, Tensor):
+        raise DetectionTrainingError("Resume checkpoint CPU RNG state is invalid")
+    if not isinstance(cuda_rng_state_all, list) or not all(
+        isinstance(state, Tensor) for state in cuda_rng_state_all
+    ):
+        raise DetectionTrainingError("Resume checkpoint CUDA RNG state is invalid")
+    if device.type == "cuda" and len(cuda_rng_state_all) != torch.cuda.device_count():
+        raise DetectionTrainingError(
+            "Resume checkpoint CUDA RNG state does not match available devices"
+        )
+
+    raw_metrics = payload.get("metrics")
+    metrics = _parse_checkpoint_metrics(raw_metrics, completed_epoch=completed_epoch)
+    return _ResumeState(
+        completed_epoch=completed_epoch,
+        best_validation_loss=float(best_validation_loss),
+        metrics=metrics,
+        torch_rng_state=torch_rng_state,
+        cuda_rng_state_all=tuple(cuda_rng_state_all),
+        device_type=device_type,
+    )
+
+
+def _parse_checkpoint_metrics(
+    raw_metrics: object,
+    *,
+    completed_epoch: int,
+) -> tuple[EpochMetrics, ...]:
+    if not isinstance(raw_metrics, list) or len(raw_metrics) != completed_epoch:
+        raise DetectionTrainingError("Resume checkpoint metrics are incomplete")
+    metrics: list[EpochMetrics] = []
+    for expected_epoch, raw_metric in enumerate(raw_metrics, start=1):
+        if not isinstance(raw_metric, dict) or raw_metric.get("epoch") != expected_epoch:
+            raise DetectionTrainingError("Resume checkpoint metrics are invalid")
+        train_loss = raw_metric.get("train_loss")
+        validation_loss = raw_metric.get("validation_loss")
+        learning_rate = raw_metric.get("learning_rate")
+        numeric_values = (train_loss, validation_loss, learning_rate)
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            for value in numeric_values
+        ):
+            raise DetectionTrainingError("Resume checkpoint metrics are invalid")
+        metrics.append(
+            EpochMetrics(
+                epoch=expected_epoch,
+                train_loss=float(train_loss),
+                validation_loss=float(validation_loss),
+                learning_rate=float(learning_rate),
+            )
+        )
+    return tuple(metrics)
+
+
+def _restore_rng_state(state: _ResumeState, *, device: torch.device) -> None:
+    torch.set_rng_state(state.torch_rng_state)
+    if device.type == "cuda":
+        torch.cuda.set_rng_state_all(list(state.cuda_rng_state_all))
+
+
+def _validate_resume_config(
+    checkpoint_config: Mapping[str, object],
+    *,
+    config: DetectionTrainingConfig,
+) -> None:
+    runtime_config = _config_for_json(config)
+    mismatches = [
+        field
+        for field in _RESUME_COMPATIBILITY_FIELDS
+        if checkpoint_config.get(field) != runtime_config[field]
+    ]
+    if mismatches:
+        raise DetectionTrainingError(
+            "Resume checkpoint training config is incompatible: " + ", ".join(mismatches)
+        )
+
+
+def _validate_resume_checkpoint_path(path: Path, *, output_dir: Path) -> None:
+    if path.is_symlink() or not path.is_file():
+        raise DetectionTrainingError(f"Resume checkpoint is not a regular file: {path}")
+    output_root = output_dir.resolve(strict=True)
+    resolved = path.resolve(strict=True)
+    if not resolved.is_relative_to(output_root):
+        raise DetectionTrainingError("Resume checkpoint must be inside the output directory")
+
+
+def _require_fresh_training_outputs(*paths: Path) -> None:
+    existing = [str(path) for path in paths if path.exists() or path.is_symlink()]
+    if existing:
+        raise DetectionTrainingError(
+            "Fresh training would overwrite existing artifacts: " + ", ".join(existing)
+        )
+
+
+def _atomic_torch_save(payload: Mapping[str, object], path: Path) -> None:
+    temporary_path = _safe_output_file(path.parent, f".{path.name}.tmp")
+    try:
+        torch.save(dict(payload), temporary_path)
+        temporary_path.replace(path)
+    except (OSError, RuntimeError) as exc:
+        raise DetectionTrainingError(f"Could not write training checkpoint: {exc}") from exc
+
+
+def _atomic_copy(source: Path, destination: Path) -> None:
+    temporary_path = _safe_output_file(destination.parent, f".{destination.name}.tmp")
+    try:
+        shutil.copyfile(source, temporary_path)
+        temporary_path.replace(destination)
+    except OSError as exc:
+        raise DetectionTrainingError(f"Could not write best checkpoint: {exc}") from exc
+
+
+def _write_metrics(
+    path: Path,
+    *,
+    metrics: Sequence[Mapping[str, object]],
+    best_validation_loss: float,
+) -> None:
+    best_epoch = min(
+        metrics,
+        key=lambda metric: float(metric["validation_loss"]),
+    )["epoch"]
+    payload = {
+        "best_epoch": best_epoch,
+        "best_validation_loss": best_validation_loss,
+        "metrics": list(metrics),
+    }
+    temporary_path = _safe_output_file(path.parent, f".{path.name}.tmp")
+    try:
+        temporary_path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        temporary_path.replace(path)
+    except OSError as exc:
+        raise DetectionTrainingError(f"Could not write training metrics: {exc}") from exc
 
 
 def _run_loss_epoch(
@@ -428,6 +736,17 @@ def _path_value(payload: dict[str, object], key: str) -> Path:
     return Path(value)
 
 
+def _optional_path_value(payload: dict[str, object], key: str) -> Path | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise DetectionTrainingError(f"{key} must be a non-empty string path when provided")
+    if "\x00" in value:
+        raise DetectionTrainingError(f"{key} contains a null byte")
+    return Path(value)
+
+
 def _positive_int(payload: dict[str, object], key: str) -> int:
     value = payload.get(key)
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
@@ -532,6 +851,11 @@ def _config_for_json(config: DetectionTrainingConfig) -> dict[str, Any]:
         "num_workers": config.num_workers,
         "output_dir": str(config.output_dir),
         "pretrained_weights": config.pretrained_weights,
+        "resume_checkpoint_path": (
+            str(config.resume_checkpoint_path)
+            if config.resume_checkpoint_path is not None
+            else None
+        ),
         "seed": config.seed,
         "trainable_backbone_layers": config.trainable_backbone_layers,
         "weight_decay": config.weight_decay,
