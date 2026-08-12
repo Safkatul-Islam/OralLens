@@ -8,6 +8,7 @@ import pytest
 
 from orallens_ml.cli import evaluate, predict, train
 from orallens_ml.evaluation.detection import DetectionEvaluationError
+from orallens_ml.evaluation.trustworthiness import DetectionTrustworthinessError
 from orallens_ml.inference.detection import DetectionInferenceError
 from orallens_ml.training.detection import DetectionTrainingError
 
@@ -270,4 +271,71 @@ def test_evaluate_detection_cli_returns_safe_error_without_traceback(
     assert exit_code == 2
     assert captured.out == ""
     assert captured.err == "error: invalid evaluation config\n"
+    assert "Traceback" not in captured.err
+
+
+def test_evaluate_detection_trustworthiness_cli_emits_summary(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "trust.toml"
+    config = object()
+    calls: dict[str, object] = {}
+
+    def load_config(path: Path) -> object:
+        calls["config_path"] = path
+        return config
+
+    def run_report(received_config: object) -> SimpleNamespace:
+        calls["config"] = received_config
+        return SimpleNamespace(
+            report_path=tmp_path / "runs" / "trustworthiness_report.json",
+            split="validation",
+            deployed_metrics={"f1": 0.75},
+            uncapped_metrics={"f1": 0.76},
+            cap_affected_image_count=2,
+            score_to_match_ece=0.1,
+        )
+
+    monkeypatch.setattr(evaluate, "load_detection_trustworthiness_config", load_config)
+    monkeypatch.setattr(evaluate, "run_detection_trustworthiness", run_report)
+
+    exit_code = evaluate.main(
+        ["detection-trustworthiness", "--config", str(config_path)]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert calls == {"config_path": config_path, "config": config}
+    assert json.loads(captured.out) == {
+        "cap_affected_image_count": 2,
+        "deployed_metrics": {"f1": 0.75},
+        "report_path": str(tmp_path / "runs" / "trustworthiness_report.json"),
+        "score_to_match_ece": 0.1,
+        "split": "validation",
+        "status": "detection-trustworthiness-evaluated",
+        "uncapped_metrics": {"f1": 0.76},
+    }
+    assert captured.err == ""
+
+
+def test_evaluate_detection_trustworthiness_cli_returns_safe_error(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def load_config(path: Path) -> object:
+        raise DetectionTrustworthinessError(f"cannot load {path.name}")
+
+    monkeypatch.setattr(evaluate, "load_detection_trustworthiness_config", load_config)
+
+    exit_code = evaluate.main(
+        ["detection-trustworthiness", "--config", str(tmp_path / "missing.toml")]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert captured.out == ""
+    assert captured.err == "error: cannot load missing.toml\n"
     assert "Traceback" not in captured.err
