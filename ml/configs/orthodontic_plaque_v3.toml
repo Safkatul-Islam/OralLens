@@ -1,8 +1,22 @@
-schema_version = 1
+schema_version = 2
 dataset_id = "orthodontic-plaque-fixed-labial"
 dataset_version = 3
 license = "CC BY 4.0"
 publisher = "Mendeley Data"
+source_family_id = "airc-labden-orthodontic-plaque"
+reviewed_on = "2026-08-08"
+roles = ["plaque_supervision"]
+grouping_keys = ["patient_id"]
+capture_context = "Standardized fixed-orthodontic labial photographs with source-provided augmentations."
+limitations = [
+  "Standardized orthodontic images do not represent consumer phone-camera acquisition.",
+  "Every prepared Part 2 image currently contains at least one plaque-present region.",
+  "Part 1 remains excluded until its nested archive passes official integrity validation.",
+]
+
+[label_semantics]
+"0" = "plaque_absent_region"
+"1" = "plaque_present_region"
 
 [[artifacts]]
 artifact_id = "part-1"
