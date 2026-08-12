@@ -45,16 +45,28 @@ type ApiError = {
 };
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
+const SUPPORTED_IMAGE_EXTENSIONS: Record<string, readonly string[]> = {
+  "image/jpeg": [".jpg", ".jpeg"],
+  "image/png": [".png"],
+};
+
+function isSupportedImage(file: File) {
+  const dotIndex = file.name.lastIndexOf(".");
+  const extension = dotIndex >= 0 ? file.name.slice(dotIndex).toLowerCase() : "";
+  return SUPPORTED_IMAGE_EXTENSIONS[file.type]?.includes(extension) ?? false;
+}
 
 function App() {
   const file = useFileState();
   const scan = useScanState();
   const [isSubmitting, setIsSubmitting] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
 
   async function submitScan() {
     if (!file.current) {
       setError("Select a JPEG or PNG image first.");
+      fileInputRef.current?.focus();
       return;
     }
     setIsSubmitting(true);
@@ -96,10 +108,21 @@ function App() {
           <section className="upload-panel" aria-label="Image upload">
             <label className="dropzone">
               <input
+                ref={fileInputRef}
                 type="file"
                 accept="image/jpeg,image/png"
+                aria-label="Choose oral image"
+                aria-describedby="file-guidance"
                 onChange={(event) => {
                   const selected = event.currentTarget.files?.[0] ?? null;
+                  if (selected && !isSupportedImage(selected)) {
+                    event.currentTarget.value = "";
+                    file.setCurrent(null);
+                    scan.setCurrent(null);
+                    setError("Select a JPEG or PNG image.");
+                    event.currentTarget.focus();
+                    return;
+                  }
                   file.setCurrent(selected);
                   scan.setCurrent(null);
                   setError(null);
@@ -107,7 +130,7 @@ function App() {
               />
               <ImageUp size={28} aria-hidden="true" />
               <span>{file.current ? file.current.name : "Choose oral image"}</span>
-              <small>JPEG or PNG</small>
+              <small id="file-guidance">JPEG or PNG</small>
             </label>
 
             <div className="preview-frame">
@@ -124,6 +147,10 @@ function App() {
               {isSubmitting ? <Loader2 className="spin" size={18} aria-hidden="true" /> : <Upload size={18} aria-hidden="true" />}
               <span>{isSubmitting ? "Scanning" : "Run scan"}</span>
             </button>
+
+            <p className="visually-hidden" role="status" aria-atomic="true">
+              {isSubmitting ? "Scanning image." : scan.current ? "Scan complete." : ""}
+            </p>
 
             {error ? (
               <div className="alert" role="alert">
@@ -187,7 +214,8 @@ function ResultPanel({ scan }: { scan: ScanRecord | null }) {
     );
   }
 
-  const confidence = Math.round(scan.prediction.confidence * 100);
+  const score = scan.prediction.confidence.toFixed(3);
+  const scoreLabel = scan.prediction.is_mock ? "Mock score" : "Detector score";
   return (
     <section className="result-panel" aria-label="Scan result">
       <div className="result-heading">
@@ -195,7 +223,14 @@ function ResultPanel({ scan }: { scan: ScanRecord | null }) {
           <p className="eyebrow">{scan.prediction.is_mock ? "Mock adapter" : "MVP detector"}</p>
           <h2>{scan.prediction.display_name}</h2>
         </div>
-        <div className="score">{confidence}%</div>
+        <div>
+          <div className="score">{score}</div>
+          <small>
+            {scoreLabel}
+            <br />
+            not a clinical probability
+          </small>
+        </div>
       </div>
 
       <dl className="metrics-grid">
