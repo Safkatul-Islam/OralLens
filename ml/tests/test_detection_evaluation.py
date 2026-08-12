@@ -12,6 +12,7 @@ import orallens_ml.evaluation.detection as detection_evaluation
 from orallens_ml.evaluation.detection import (
     DetectionEvaluationConfig,
     DetectionEvaluationError,
+    evaluate_detection_image,
     evaluate_detection_predictions,
     load_detection_evaluation_config,
     run_detection_evaluation,
@@ -71,21 +72,28 @@ def target(*, boxes: list[list[float]], labels: list[int]) -> dict[str, torch.Te
     }
 
 
-def write_manifest_dataset(root: Path) -> tuple[Path, Path]:
+def write_manifest_dataset(
+    root: Path,
+    *,
+    annotations: list[dict[str, object]] | None = None,
+) -> tuple[Path, Path]:
     dataset_root = root / "dataset"
     manifest_path = root / "manifest.csv"
     image_path = dataset_root / "data" / "images" / "patient0001" / "sample.jpg"
     image_path.parent.mkdir(parents=True, exist_ok=True)
     Image.new("RGB", (8, 6), color=(20, 40, 60)).save(image_path)
-    annotation = {
-        "class_id": 1,
-        "x_center": 0.5,
-        "y_center": 0.5,
-        "width": 0.25,
-        "height": 0.5,
-        "tooth_id": 7,
-        "source_label_line": 1,
-    }
+    if annotations is None:
+        annotations = [
+            {
+                "class_id": 1,
+                "x_center": 0.5,
+                "y_center": 0.5,
+                "width": 0.25,
+                "height": 0.5,
+                "tooth_id": 7,
+                "source_label_line": 1,
+            }
+        ]
     with manifest_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=FIELDNAMES)
         writer.writeheader()
@@ -96,8 +104,8 @@ def write_manifest_dataset(root: Path) -> tuple[Path, Path]:
                 "split": "validation",
                 "image_relative_path": "data/images/patient0001/sample.jpg",
                 "source_csv_line": "2",
-                "annotation_count": "1",
-                "annotations_json": json.dumps([annotation]),
+                "annotation_count": str(len(annotations)),
+                "annotations_json": json.dumps(annotations),
             }
         )
     return dataset_root, manifest_path
@@ -167,6 +175,56 @@ def test_evaluate_detection_predictions_filters_by_score() -> None:
 
     assert metrics[0].prediction_count == 0
     assert metrics[0].false_negatives == 1
+
+
+def test_evaluate_detection_image_preserves_match_evidence_and_applies_cap() -> None:
+    result = evaluate_detection_image(
+        prediction(
+            boxes=[
+                [0.0, 0.0, 10.0, 10.0],
+                [0.0, 0.0, 10.0, 10.0],
+                [20.0, 20.0, 30.0, 30.0],
+            ],
+            labels=[1, 1, 1],
+            scores=[0.8, 0.9, 0.7],
+        ),
+        target(
+            boxes=[
+                [0.0, 0.0, 10.0, 10.0],
+                [20.0, 20.0, 30.0, 30.0],
+            ],
+            labels=[1, 1],
+        ),
+        iou_threshold=0.5,
+        score_threshold=0.5,
+        num_classes=2,
+        max_detections=2,
+    )
+
+    assert result.eligible_prediction_count == 3
+    assert result.prediction_count == 2
+    assert result.truncated_prediction_count == 1
+    assert result.true_positives == 1
+    assert result.false_positives == 1
+    assert result.false_negatives == 1
+    assert result.unmatched_target_indexes == (1,)
+    assert [match.prediction_index for match in result.prediction_matches] == [1, 0]
+    assert result.prediction_matches[0].matched_target_index == 0
+    assert result.prediction_matches[1].is_true_positive is False
+    assert result.prediction_matches[1].best_target_index == 0
+    assert result.prediction_matches[1].best_iou == 1.0
+
+
+def test_evaluate_detection_image_rejects_invalid_cap() -> None:
+    with pytest.raises(DetectionEvaluationError, match="max_detections"):
+        evaluate_detection_image(
+            prediction(boxes=[], labels=[], scores=[]),
+            target(boxes=[[0.0, 0.0, 10.0, 10.0]], labels=[1]),
+            iou_threshold=0.5,
+            score_threshold=0.5,
+            num_classes=2,
+            max_detections=0,
+        )
 
 
 def test_evaluate_detection_predictions_rejects_invalid_scores() -> None:
@@ -314,6 +372,63 @@ def test_run_detection_evaluation_writes_metrics(tmp_path: Path) -> None:
     assert result.metrics[0].true_positives == 1
     payload = json.loads(result.metrics_path.read_text(encoding="utf-8"))
     assert payload["metrics"][0]["precision"] == 1.0
+
+
+def test_run_detection_evaluation_scores_only_plaque_targets(tmp_path: Path) -> None:
+    dataset_root, manifest_path = write_manifest_dataset(
+        tmp_path,
+        annotations=[
+            {
+                "class_id": 0,
+                "x_center": 0.25,
+                "y_center": 0.5,
+                "width": 0.25,
+                "height": 0.5,
+                "tooth_id": 6,
+                "source_label_line": 1,
+            },
+            {
+                "class_id": 1,
+                "x_center": 0.5,
+                "y_center": 0.5,
+                "width": 0.25,
+                "height": 0.5,
+                "tooth_id": 7,
+                "source_label_line": 2,
+            },
+        ],
+    )
+    checkpoint_path = tmp_path / "checkpoint.pt"
+    save_detection_checkpoint(
+        model=TinyEvalModel(),
+        path=checkpoint_path,
+        config=checkpoint_config(),
+        metrics=[],
+    )
+    config = DetectionEvaluationConfig(
+        dataset_root=dataset_root,
+        manifest_path=manifest_path,
+        checkpoint_path=checkpoint_path,
+        output_dir=tmp_path / "evaluation",
+        split="validation",
+        batch_size=1,
+        num_workers=0,
+        num_classes=2,
+        image_min_size=64,
+        image_max_size=128,
+        trainable_backbone_layers=0,
+        pretrained_weights="none",
+        device="cpu",
+        iou_thresholds=(0.5,),
+        score_thresholds=(0.5,),
+        max_batches=1,
+    )
+
+    result = run_detection_evaluation(config, model_factory=lambda _: TinyEvalModel())
+
+    assert result.metrics[0].target_count == 1
+    assert result.metrics[0].true_positives == 1
+    assert result.metrics[0].false_negatives == 0
 
 
 def test_run_detection_evaluation_translates_target_validation_error(
