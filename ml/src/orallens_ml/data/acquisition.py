@@ -9,12 +9,29 @@ import re
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 from urllib.parse import urlsplit
 
 _ALLOWED_DOWNLOAD_HOST = "data.mendeley.com"
+_ALLOWED_DATASET_ROLES = frozenset(
+    {
+        "input_quality",
+        "locked_challenge",
+        "ood_abstention",
+        "oral_roi",
+        "plaque_supervision",
+    }
+)
+_PLAQUE_LABEL_SEMANTICS = {
+    "0": "plaque_absent_region",
+    "1": "plaque_present_region",
+}
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+_IDENTIFIER_PATTERN = re.compile(r"[a-z0-9][a-z0-9._-]*")
+_GROUPING_KEY_PATTERN = re.compile(r"[a-z][a-z0-9_]*")
+_ISO_DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}")
 _DEFAULT_CHUNK_SIZE = 1024 * 1024
 
 
@@ -49,6 +66,13 @@ class DatasetRelease:
     dataset_version: int
     license: str
     publisher: str
+    source_family_id: str
+    reviewed_on: str
+    roles: tuple[str, ...]
+    grouping_keys: tuple[str, ...]
+    capture_context: str
+    label_semantics: tuple[tuple[str, str], ...]
+    limitations: tuple[str, ...]
     artifacts: tuple[DatasetArtifact, ...]
 
     def artifact(self, artifact_id: str) -> DatasetArtifact:
@@ -81,8 +105,38 @@ def load_release_config(config_path: Path) -> DatasetRelease:
         raise AcquisitionError(f"Acquisition config is invalid TOML: {exc}") from exc
 
     schema_version = _required_int(data, "schema_version", "config")
-    if schema_version != 1:
+    if schema_version != 2:
         raise AcquisitionError(f"Unsupported acquisition schema: {schema_version}")
+
+    roles = _required_unique_string_list(data, "roles", "config")
+    unknown_roles = sorted(set(roles) - _ALLOWED_DATASET_ROLES)
+    if unknown_roles:
+        raise AcquisitionError(
+            "Config contains unsupported dataset roles: " + ", ".join(unknown_roles)
+        )
+    grouping_keys = _required_unique_string_list(data, "grouping_keys", "config")
+    invalid_grouping_keys = [
+        key for key in grouping_keys if _GROUPING_KEY_PATTERN.fullmatch(key) is None
+    ]
+    if invalid_grouping_keys:
+        raise AcquisitionError(
+            "Config grouping_keys must use lowercase identifier names"
+        )
+    label_semantics = _required_string_mapping(data, "label_semantics", "config")
+    if "plaque_supervision" in roles and dict(label_semantics) != _PLAQUE_LABEL_SEMANTICS:
+        raise AcquisitionError(
+            "Plaque-supervision sources must define label semantics "
+            "0=plaque_absent_region and 1=plaque_present_region"
+        )
+
+    source_family_id = _required_string(data, "source_family_id", "config")
+    if _IDENTIFIER_PATTERN.fullmatch(source_family_id) is None:
+        raise AcquisitionError(
+            "config source_family_id must use lowercase letters, numbers, '.', '_' or '-'"
+        )
+    reviewed_on = _validated_reviewed_on(
+        _required_string(data, "reviewed_on", "config")
+    )
 
     raw_artifacts = data.get("artifacts")
     if not isinstance(raw_artifacts, list) or not raw_artifacts:
@@ -111,6 +165,13 @@ def load_release_config(config_path: Path) -> DatasetRelease:
         dataset_version=_positive_int(data, "dataset_version", "config"),
         license=_required_string(data, "license", "config"),
         publisher=_required_string(data, "publisher", "config"),
+        source_family_id=source_family_id,
+        reviewed_on=reviewed_on,
+        roles=roles,
+        grouping_keys=grouping_keys,
+        capture_context=_required_string(data, "capture_context", "config"),
+        label_semantics=label_semantics,
+        limitations=_required_unique_string_list(data, "limitations", "config"),
         artifacts=artifacts,
     )
 
@@ -325,6 +386,58 @@ def _required_int(table: Mapping[str, Any], key: str, context: str) -> int:
     value = table.get(key)
     if isinstance(value, bool) or not isinstance(value, int):
         raise AcquisitionError(f"{context} {key} must be an integer")
+    return value
+
+
+def _required_unique_string_list(
+    table: Mapping[str, Any],
+    key: str,
+    context: str,
+) -> tuple[str, ...]:
+    raw_values = table.get(key)
+    if not isinstance(raw_values, list) or not raw_values:
+        raise AcquisitionError(f"{context} {key} must be a non-empty list")
+    values = tuple(
+        _non_empty_string(value, f"{context} {key}") for value in raw_values
+    )
+    if len(values) != len(set(values)):
+        raise AcquisitionError(f"{context} {key} must not contain duplicates")
+    return values
+
+
+def _required_string_mapping(
+    table: Mapping[str, Any],
+    key: str,
+    context: str,
+) -> tuple[tuple[str, str], ...]:
+    raw_mapping = table.get(key)
+    if not isinstance(raw_mapping, Mapping) or not raw_mapping:
+        raise AcquisitionError(f"{context} {key} must be a non-empty table")
+    values = tuple(
+        sorted(
+            (
+                _non_empty_string(raw_key, f"{context} {key} key"),
+                _non_empty_string(raw_value, f"{context} {key} value"),
+            )
+            for raw_key, raw_value in raw_mapping.items()
+        )
+    )
+    return values
+
+
+def _non_empty_string(value: Any, context: str) -> str:
+    if not isinstance(value, str) or not value.strip() or "\x00" in value:
+        raise AcquisitionError(f"{context} must contain non-empty strings")
+    return value.strip()
+
+
+def _validated_reviewed_on(value: str) -> str:
+    if _ISO_DATE_PATTERN.fullmatch(value) is None:
+        raise AcquisitionError("config reviewed_on must use YYYY-MM-DD format")
+    try:
+        date.fromisoformat(value)
+    except ValueError as exc:
+        raise AcquisitionError("config reviewed_on must be a valid calendar date") from exc
     return value
 
 
