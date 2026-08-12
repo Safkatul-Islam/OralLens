@@ -1,0 +1,28 @@
+# Controlled v3 experiment: preserve the v2 architecture, optimizer, seed, and
+# three-epoch budget while removing batch caps so every epoch covers the full
+# patient-aware training and validation splits. This run starts fresh from the
+# official pretrained TorchVision weights; it is not a continuation of v2.
+
+[data]
+dataset_root = "ml/data/raw/orthodontic_plaque/v3/extracted/part-2/mendeley-dataset-materials_Part_2"
+manifest_path = "ml/data/prepared/orthodontic_plaque/v3/part-2/manifest.csv"
+
+[model]
+num_classes = 2
+image_min_size = 512
+image_max_size = 768
+trainable_backbone_layers = 3
+pretrained_weights = "default"
+
+[training]
+epochs = 3
+batch_size = 1
+learning_rate = 0.005
+momentum = 0.9
+weight_decay = 0.0005
+num_workers = 0
+device = "auto"
+seed = 20260711
+
+[output]
+output_dir = "ml/runs/detection/orthodontic_plaque_part2_mvp_v3"
