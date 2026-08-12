@@ -49,6 +49,7 @@ def config_for(
     max_detections: int = 25,
 ) -> DetectionInferenceConfig:
     return DetectionInferenceConfig(
+        model_name="orthodontic-plaque-test-v1",
         checkpoint_path=checkpoint_path,
         output_dir=tmp_path / "runs" if output_dir is None else output_dir,
         num_classes=2,
@@ -88,6 +89,7 @@ def test_load_detection_inference_config_validates_values(tmp_path: Path) -> Non
     config_path.write_text(
         """
 [model]
+model_name = "orthodontic-plaque-test-v1"
 checkpoint_path = "checkpoint.pt"
 num_classes = 2
 image_min_size = 64
@@ -109,6 +111,32 @@ output_dir = "runs/predict"
     assert config.score_threshold == 0.5
     assert config.max_detections == 10
     assert config.device == "cpu"
+    assert config.model_name == "orthodontic-plaque-test-v1"
+
+
+def test_load_detection_inference_config_requires_model_name(tmp_path: Path) -> None:
+    config_path = tmp_path / "predict.toml"
+    config_path.write_text(
+        """
+[model]
+checkpoint_path = "checkpoint.pt"
+num_classes = 2
+image_min_size = 64
+image_max_size = 128
+trainable_backbone_layers = 0
+pretrained_weights = "none"
+[inference]
+device = "cpu"
+score_threshold = 0.5
+max_detections = 10
+[output]
+output_dir = "runs/predict"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(DetectionInferenceError, match="model_name"):
+        load_detection_inference_config(config_path)
 
 
 def test_load_detection_inference_config_rejects_invalid_threshold(tmp_path: Path) -> None:
@@ -116,6 +144,7 @@ def test_load_detection_inference_config_rejects_invalid_threshold(tmp_path: Pat
     config_path.write_text(
         """
 [model]
+model_name = "orthodontic-plaque-test-v1"
 checkpoint_path = "checkpoint.pt"
 num_classes = 2
 image_min_size = 64
@@ -154,6 +183,7 @@ def test_run_detection_inference_writes_filtered_predictions(tmp_path: Path) -> 
     assert result.predictions[0].score == pytest.approx(0.9)
     payload = json.loads(result.output_path.read_text(encoding="utf-8"))
     assert payload["image_width"] == 8
+    assert payload["model_name"] == "orthodontic-plaque-test-v1"
     assert payload["prediction_count"] == 1
     assert len(payload["predictions"]) == 1
 
