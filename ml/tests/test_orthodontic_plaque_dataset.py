@@ -22,6 +22,17 @@ FIELDNAMES = (
     "annotation_count",
     "annotations_json",
 )
+SOURCE_AWARE_FIELDNAMES = (
+    "manifest_schema_version",
+    "dataset_id",
+    "dataset_version",
+    "source_family_id",
+    "source_artifact_id",
+    "split_group_id",
+    "derivative_group_id",
+    "variant",
+    *FIELDNAMES,
+)
 
 
 def annotation(**overrides: object) -> dict[str, object]:
@@ -52,6 +63,14 @@ def write_fixture(
     Image.new("RGB", (4, 3), color=(20, 40, 60)).save(image_path)
     annotation_rows = [annotation()] if annotations is None else annotations
     values = {
+        "manifest_schema_version": "1",
+        "dataset_id": "dataset",
+        "dataset_version": "3",
+        "source_family_id": "source-family",
+        "source_artifact_id": "part-2",
+        "split_group_id": "patient0001",
+        "derivative_group_id": "sample",
+        "variant": "original",
         "sample_id": "sample",
         "patient_id": "patient0001",
         "split": split,
@@ -83,6 +102,22 @@ def test_dataset_loads_valid_sample(tmp_path: Path) -> None:
     assert target.labels.tolist() == [1]
     assert target.tooth_ids.tolist() == [7]
     assert target.source_label_lines.tolist() == [1]
+
+
+def test_dataset_loads_source_aware_manifest_columns(tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.csv"
+    write_fixture(
+        tmp_path,
+        manifest,
+        fieldnames=SOURCE_AWARE_FIELDNAMES,
+    )
+
+    dataset = OrthodonticPlaquePart2Dataset(
+        dataset_root=tmp_path,
+        manifest_path=manifest,
+    )
+
+    assert dataset[0][1].sample_id == "sample"
 
 
 def test_dataset_filters_split(tmp_path: Path) -> None:
@@ -142,4 +177,12 @@ def test_dataset_rejects_invalid_annotation_shape(tmp_path: Path) -> None:
     write_fixture(tmp_path, manifest, annotations=[annotation(width=0.0)])
 
     with pytest.raises(OrthodonticPlaqueDatasetError, match="non-positive size"):
+        OrthodonticPlaquePart2Dataset(dataset_root=tmp_path, manifest_path=manifest)
+
+
+def test_dataset_rejects_unsupported_source_class_id(tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.csv"
+    write_fixture(tmp_path, manifest, annotations=[annotation(class_id=2)])
+
+    with pytest.raises(OrthodonticPlaqueDatasetError, match="class_id must be 0 or 1"):
         OrthodonticPlaquePart2Dataset(dataset_root=tmp_path, manifest_path=manifest)
