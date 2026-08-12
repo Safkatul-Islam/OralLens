@@ -215,7 +215,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command == "build-orthodontic-plaque-manifest":
             samples, report = build_orthodontic_plaque_part2_manifest(args.dataset_root)
             preflight_part2_output_paths(args.manifest_output, args.exclusions_output)
-            write_part2_manifest_csv(samples, args.manifest_output)
+            write_part2_manifest_csv(
+                samples,
+                args.manifest_output,
+                dataset_id=release.dataset_id,
+                dataset_version=release.dataset_version,
+                source_family_id=release.source_family_id,
+                source_artifact_id=artifact.artifact_id,
+            )
             write_part2_exclusions_csv(report.exclusions, args.exclusions_output)
             payload = {
                 "artifact_id": artifact.artifact_id,
