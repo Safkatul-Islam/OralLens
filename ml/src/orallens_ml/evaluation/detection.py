@@ -77,6 +77,39 @@ class DetectionMetric:
 
 
 @dataclass(frozen=True, slots=True)
+class DetectionPredictionMatch:
+    """Matching evidence for one score-filtered detection prediction."""
+
+    prediction_index: int
+    box_xyxy: tuple[float, float, float, float]
+    label: int
+    score: float
+    is_true_positive: bool
+    best_target_index: int | None
+    best_iou: float | None
+    matched_target_index: int | None
+    matched_iou: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class DetectionImageEvaluation:
+    """Detailed matching result for one image and operating point."""
+
+    iou_threshold: float
+    score_threshold: float
+    true_positives: int
+    false_positives: int
+    false_negatives: int
+    target_count: int
+    prediction_count: int
+    eligible_prediction_count: int
+    truncated_prediction_count: int
+    matched_ious: tuple[float, ...]
+    prediction_matches: tuple[DetectionPredictionMatch, ...]
+    unmatched_target_indexes: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class DetectionEvaluationResult:
     """Files and metrics produced by an evaluation run."""
 
@@ -187,6 +220,34 @@ def evaluate_detection_predictions(
         )
         for iou_threshold in iou_thresholds
         for score_threshold in score_thresholds
+    )
+
+
+def evaluate_detection_image(
+    prediction: dict[str, Tensor],
+    target: dict[str, Tensor],
+    *,
+    iou_threshold: float,
+    score_threshold: float,
+    num_classes: int,
+    max_detections: int | None = None,
+) -> DetectionImageEvaluation:
+    """Return detailed score-ordered matching evidence for one image."""
+
+    if not 0.0 < iou_threshold < 1.0:
+        raise DetectionEvaluationError("iou_threshold must be between 0 and 1")
+    if not 0.0 <= score_threshold <= 1.0:
+        raise DetectionEvaluationError("score_threshold must be between 0 and 1")
+    if max_detections is not None and max_detections <= 0:
+        raise DetectionEvaluationError("max_detections must be positive when provided")
+    validated_prediction = _validate_prediction(prediction, num_classes=num_classes)
+    validated_target = _validate_target(target, num_classes=num_classes)
+    return _match_single_image(
+        validated_prediction,
+        validated_target,
+        iou_threshold=iou_threshold,
+        score_threshold=score_threshold,
+        max_detections=max_detections,
     )
 
 
@@ -320,53 +381,101 @@ def _match_single_image(
     *,
     iou_threshold: float,
     score_threshold: float,
-) -> _MetricAccumulator:
+    max_detections: int | None = None,
+) -> DetectionImageEvaluation:
     scores = prediction["scores"]
     keep = scores >= score_threshold
-    pred_boxes = prediction["boxes"][keep]
-    pred_labels = prediction["labels"][keep]
-    pred_scores = scores[keep]
-    order = torch.argsort(pred_scores, descending=True)
-    pred_boxes = pred_boxes[order]
-    pred_labels = pred_labels[order]
+    eligible_indexes = torch.nonzero(keep, as_tuple=False).flatten()
+    eligible_prediction_count = int(eligible_indexes.shape[0])
+    order = torch.argsort(scores[eligible_indexes], descending=True)
+    ordered_indexes = eligible_indexes[order]
+    if max_detections is not None:
+        ordered_indexes = ordered_indexes[:max_detections]
+    pred_boxes = prediction["boxes"][ordered_indexes]
+    pred_labels = prediction["labels"][ordered_indexes]
+    pred_scores = scores[ordered_indexes]
     target_boxes = target["boxes"]
     target_labels = target["labels"]
 
     matched_target_indexes: set[int] = set()
     matched_ious: list[float] = []
-    false_positives = 0
+    prediction_matches: list[DetectionPredictionMatch] = []
     if pred_boxes.numel() and target_boxes.numel():
         ious = box_iou(pred_boxes, target_boxes)
     else:
         ious = torch.zeros((pred_boxes.shape[0], target_boxes.shape[0]))
 
     for prediction_index, label in enumerate(pred_labels):
-        candidate_indexes = [
+        same_label_indexes = [
             target_index
             for target_index, target_label in enumerate(target_labels)
-            if int(target_label) == int(label) and target_index not in matched_target_indexes
+            if int(target_label) == int(label)
         ]
-        if not candidate_indexes:
-            false_positives += 1
-            continue
-        candidate_ious = ious[prediction_index, candidate_indexes]
-        best_position = int(torch.argmax(candidate_ious))
-        best_iou = float(candidate_ious[best_position])
-        if best_iou >= iou_threshold:
-            matched_target_indexes.add(candidate_indexes[best_position])
-            matched_ious.append(best_iou)
-        else:
-            false_positives += 1
+        best_target_index: int | None = None
+        best_iou: float | None = None
+        if same_label_indexes:
+            same_label_ious = ious[prediction_index, same_label_indexes]
+            best_position = int(torch.argmax(same_label_ious))
+            best_target_index = same_label_indexes[best_position]
+            best_iou = float(same_label_ious[best_position])
+
+        available_indexes = [
+            target_index
+            for target_index in same_label_indexes
+            if target_index not in matched_target_indexes
+        ]
+        matched_target_index: int | None = None
+        matched_iou: float | None = None
+        if available_indexes:
+            available_ious = ious[prediction_index, available_indexes]
+            available_position = int(torch.argmax(available_ious))
+            candidate_target_index = available_indexes[available_position]
+            candidate_iou = float(available_ious[available_position])
+            if candidate_iou >= iou_threshold:
+                matched_target_index = candidate_target_index
+                matched_iou = candidate_iou
+                matched_target_indexes.add(candidate_target_index)
+                matched_ious.append(candidate_iou)
+
+        source_prediction_index = int(ordered_indexes[prediction_index])
+        prediction_matches.append(
+            DetectionPredictionMatch(
+                prediction_index=source_prediction_index,
+                box_xyxy=tuple(
+                    float(value) for value in pred_boxes[prediction_index].tolist()
+                ),
+                label=int(label),
+                score=float(pred_scores[prediction_index]),
+                is_true_positive=matched_target_index is not None,
+                best_target_index=best_target_index,
+                best_iou=best_iou,
+                matched_target_index=matched_target_index,
+                matched_iou=matched_iou,
+            )
+        )
 
     true_positives = len(matched_target_indexes)
-    false_negatives = target_boxes.shape[0] - true_positives
-    return _MetricAccumulator(
+    prediction_count = int(pred_boxes.shape[0])
+    target_count = int(target_boxes.shape[0])
+    false_positives = prediction_count - true_positives
+    false_negatives = target_count - true_positives
+    return DetectionImageEvaluation(
+        iou_threshold=iou_threshold,
+        score_threshold=score_threshold,
         true_positives=true_positives,
         false_positives=false_positives,
         false_negatives=false_negatives,
-        target_count=target_boxes.shape[0],
-        prediction_count=pred_boxes.shape[0],
-        matched_ious=matched_ious,
+        target_count=target_count,
+        prediction_count=prediction_count,
+        eligible_prediction_count=eligible_prediction_count,
+        truncated_prediction_count=eligible_prediction_count - prediction_count,
+        matched_ious=tuple(matched_ious),
+        prediction_matches=tuple(prediction_matches),
+        unmatched_target_indexes=tuple(
+            target_index
+            for target_index in range(target_count)
+            if target_index not in matched_target_indexes
+        ),
     )
 
 
