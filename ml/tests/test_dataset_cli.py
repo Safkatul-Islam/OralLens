@@ -12,11 +12,21 @@ from orallens_ml.cli.dataset import main
 
 def write_config(path: Path, digest: str) -> None:
     path.write_text(
-        f'''schema_version = 1
+        f'''schema_version = 2
 dataset_id = "dataset"
 dataset_version = 3
 license = "CC BY 4.0"
 publisher = "Mendeley Data"
+source_family_id = "airc-labden"
+reviewed_on = "2026-08-08"
+roles = ["plaque_supervision"]
+grouping_keys = ["patient_id"]
+capture_context = "Standardized orthodontic photographs."
+limitations = ["Not representative of consumer phone photographs."]
+
+[label_semantics]
+"0" = "plaque_absent_region"
+"1" = "plaque_present_region"
 
 [[artifacts]]
 artifact_id = "part-1"
@@ -327,6 +337,16 @@ def test_cli_builds_orthodontic_plaque_manifest_outputs(
     manifest_rows = list(csv.DictReader(manifest_output.open("r", encoding="utf-8")))
     exclusion_rows = list(csv.DictReader(exclusions_output.open("r", encoding="utf-8")))
     assert manifest_rows[0]["annotation_count"] == "1"
+    assert manifest_rows[0]["manifest_schema_version"] == "1"
+    assert manifest_rows[0]["dataset_id"] == "dataset"
+    assert manifest_rows[0]["dataset_version"] == "3"
+    assert manifest_rows[0]["source_family_id"] == "airc-labden"
+    assert manifest_rows[0]["source_artifact_id"] == "part-1"
+    assert manifest_rows[0]["split_group_id"] == "patient0001"
+    assert manifest_rows[0]["derivative_group_id"] == (
+        "patient0001_20260101_bottom-left"
+    )
+    assert manifest_rows[0]["variant"] == "original"
     assert exclusion_rows[0]["code"] == "non_positive_box_size"
 
 
