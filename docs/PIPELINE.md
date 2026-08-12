@@ -38,7 +38,7 @@ flowchart LR
     FE --> UI[Metadata, report, and box overlay]
 ```
 
-The browser-facing runtime and offline model development meet at a configuration boundary. The application currently selects v3 through backend typed settings and the real-ML startup scripts.
+The browser-facing runtime and offline model development meet at a configuration boundary. The application currently selects the historical v3 model through backend typed settings and the real-ML startup scripts. A corrected v4 diagnostic completed two epochs, was stopped after validation-loss reversal, and has not been evaluated, integrated, or promoted.
 
 ## Runtime request pipeline
 
@@ -46,13 +46,13 @@ The browser-facing runtime and offline model development meet at a configuration
 
 Owner: [`frontend/src/main.tsx`](../frontend/src/main.tsx)
 
-`App` accepts JPEG or PNG, creates a local object URL, and resets the previous result when the selection changes. `ImagePreview` owns the natural image dimensions required to draw returned `xyxy` coordinates correctly.
+`App` accepts JPEG or PNG only when the declared MIME type matches a supported filename extension, creates a local object URL, and resets the previous result when the selection changes. This client check prevents an unnecessary request but is not a security substitute for backend content validation. `ImagePreview` owns the natural image dimensions required to draw returned `xyxy` coordinates correctly.
 
 Input: browser-selected file
 
 Output: local preview and a `File` ready for submission
 
-Failure behavior: submission is blocked when no file is selected; client-visible request errors render in an alert region.
+Failure behavior: submission is blocked and focus returns to the file input when no file is selected or the selected MIME/extension pair is unsupported. Client-visible request errors render in an alert region.
 
 ### 2. Submit `POST /scans`
 
@@ -143,7 +143,7 @@ Owners:
 
 The inference pipeline validates the image/config/checkpoint paths, chooses CUDA when `device = "auto"` and CUDA is available, builds Faster R-CNN with ResNet-50 FPN, and loads the project state dictionary with `weights_only=True`.
 
-The active operating point is:
+The historical active operating point is:
 
 - score threshold: `0.85`
 - maximum returned detections: `25`
@@ -152,6 +152,8 @@ The active operating point is:
 - class `1`: plaque candidate
 
 Output: pixel-space `xyxy` boxes, class labels, and detector scores written to a local prediction JSON artifact and returned to the backend adapter.
+
+V3 was trained before the source-label semantic correction and is retained only as end-to-end engineering evidence. Its model-quality metrics are not valid plaque-only evidence.
 
 ### 7. Build the screening-support report
 
@@ -201,7 +203,7 @@ Client errors include a stable code, concise detail, and request ID. Raw stack t
 
 Owner: [`frontend/src/main.tsx`](../frontend/src/main.tsx)
 
-`ResultPanel` renders model metadata, score, severity, detection count, evidence, report, limitations, next steps, and disclaimer. `ImagePreview` maps each returned pixel-space `xyxy` box into an SVG rectangle sharing the image's natural coordinate system.
+`ResultPanel` renders model metadata, score, severity, detection count, evidence, report, limitations, next steps, and disclaimer. `ImagePreview` maps each returned pixel-space `xyxy` box into an SVG rectangle sharing the image's natural coordinate system. A polite live region announces scanning and completion; visible focus and reduced-motion styles support keyboard and motion-sensitive users.
 
 ## Offline data and model lifecycle
 
@@ -213,16 +215,19 @@ flowchart TD
     EXTRACT --> AUDIT[Source, image, label, and path audit]
     AUDIT --> MANIFEST[Patient-aware prepared manifest]
     MANIFEST --> DATASET[OrthodonticPlaquePart2Dataset]
-    DATASET --> TARGET[Normalized center-size to bounded xyxy]
-    TARGET --> TRAIN[Train split: v3 full-coverage training]
-    TRAIN --> CKPT[resumable last and best checkpoints plus loss metrics]
-    CKPT --> VAL[Full validation threshold sweep]
-    VAL -->|select 0.85| FREEZE[Frozen v3 operating point]
-    FREEZE --> TEST[Fixed-threshold internal test benchmark]
-    FREEZE --> PREDICT[v3 active prediction config]
-    PREDICT --> TRUSTVAL[Validation trustworthiness report]
-    TEST --> TRUSTTEST[Frozen test trustworthiness report]
-    PREDICT --> BACKEND[Backend ML startup boundary]
+    DATASET --> TARGET[Validate all boxes and labels; retain source label 1]
+    TARGET --> HIST[Historical v1-v3 used incorrect all-positive mapping]
+    TARGET --> V4STOP[Corrected v4 stopped after two epochs]
+    V4STOP --> EVIDENCE[Isolated local diagnostic artifacts]
+    AUDIT --> ADMIT{Condition-specific source admitted?}
+    ADMIT -->|no| BLOCK[No training]
+    ADMIT -->|yes| PILOT[CUDA-enforced monitored pilot]
+    PILOT --> VAL[Validation-only policy selection]
+    VAL --> LOCK[Locked rights-safe challenge evaluation]
+    PILOT --> GATE[Oral ROI plus quality/OOD gate - planned]
+    GATE -->|supported| DETECT[Plaque detector]
+    GATE -->|unsupported| ABSTAIN[Concise abstention]
+    HIST --> BACKEND[Current historical v3 backend boundary]
 ```
 
 ### Acquisition and preparation
@@ -246,9 +251,9 @@ Owners:
 - manifest/image loader: [`ml/src/orallens_ml/data/orthodontic_plaque_dataset.py`](../ml/src/orallens_ml/data/orthodontic_plaque_dataset.py)
 - TorchVision target conversion: [`ml/src/orallens_ml/training/detection.py`](../ml/src/orallens_ml/training/detection.py)
 
-The loader validates manifest schema, safe relative paths, root containment, symlinks, files, annotation JSON, finite numbers, and normalized fields. Target conversion derives corners, permits only `1e-6` of numerical boundary tolerance, clips tolerated crossings, and rejects gross or degenerate boxes.
+The loader validates manifest schema, safe relative paths, root containment, symlinks, files, annotation JSON, finite numbers, and normalized fields. Target conversion validates every source label in `{0, 1}` and every box, derives corners, permits only `1e-6` of numerical boundary tolerance, clips tolerated crossings, rejects gross or degenerate boxes, and retains only source label `1` as plaque objects. Source label `0` means plaque absent in an annotated region; detector class `0` remains implicit background.
 
-### Training
+### Historical v3 training
 
 Owners:
 
@@ -256,7 +261,18 @@ Owners:
 - implementation: [`ml/src/orallens_ml/training/detection.py`](../ml/src/orallens_ml/training/detection.py)
 - config: [`ml/configs/orthodontic_plaque_detection_mvp_v3.toml`](../ml/configs/orthodontic_plaque_detection_mvp_v3.toml)
 
-The v3 run uses every training and validation image in each of three epochs. It writes atomic last/best checkpoints after every completed epoch, including model, optimizer, RNG, config, and metric state required for safe interruption recovery. Fresh runs reject existing output artifacts rather than silently overwriting an experiment.
+The v3 run used every training and validation image in each of three epochs. It writes atomic last/best checkpoints after every completed epoch, including model, optimizer, RNG, config, and metric state required for safe interruption recovery. It also used the incorrect all-positive source-label mapping. No future experiment may resume v3.
+
+### Stopped corrected v4 diagnostic
+
+Owners:
+
+- config: [`ml/configs/orthodontic_plaque_detection_mvp_v4.toml`](../ml/configs/orthodontic_plaque_detection_mvp_v4.toml)
+- local ignored output: `ml/runs/detection/orthodontic_plaque_part2_mvp_v4/`
+
+V4 used the corrected plaque-present conversion and source-aware manifest but the same underlying AIRC image distribution. It completed exactly two epochs. Training loss decreased from `0.7967` to `0.6149`, while validation loss worsened from `0.8250` to `1.0287`; epoch 1 is the best checkpoint. The run stopped before epoch 3 and must not be resumed, evaluated, integrated, or promoted. Its checkpoint device records show the CUDA code path, but the run did not collect utilization or throughput telemetry.
+
+The next training branch begins only after one condition-specific task and a genuinely complementary source pass admission. That branch requires explicit CUDA, runtime telemetry, a monitored smoke test, and a small predeclared pilot before validation-only policy selection.
 
 ### Validation and threshold selection
 
@@ -266,13 +282,13 @@ Owners:
 - implementation: [`ml/src/orallens_ml/evaluation/detection.py`](../ml/src/orallens_ml/evaluation/detection.py)
 - config: [`ml/configs/orthodontic_plaque_detection_mvp_v3_eval.toml`](../ml/configs/orthodontic_plaque_detection_mvp_v3_eval.toml)
 
-The evaluator processes the complete validation split across predefined score thresholds at IoU `0.5`. Threshold `0.85` produced the highest tested v3 validation F1 (`0.7776`) and became the frozen operating point. No finer search was performed.
+The evaluator processed the complete validation split across predefined score thresholds at IoU `0.5`. Under the historical target mapping, threshold `0.85` produced the highest tested v3 validation F1 (`0.7776`). This is retained as a reproducibility record, not valid plaque-only evidence.
 
 ### Fixed-threshold internal test
 
 Config: [`ml/configs/orthodontic_plaque_detection_mvp_v3_test.toml`](../ml/configs/orthodontic_plaque_detection_mvp_v3_test.toml)
 
-The v3 test config fixes split `test`, threshold `0.85`, IoU `0.5`, and no batch cap. It produced F1 `0.7795` without retuning. Because the cohort has been examined for v2 and v3, it is an internal benchmark rather than a new external validation cohort.
+The v3 test config fixes split `test`, threshold `0.85`, IoU `0.5`, and no batch cap. It historically produced F1 `0.7795` without retuning, but that number inherits the target defect. The cohort has also been examined for v2 and v3 and cannot serve as v4's locked challenge boundary.
 
 ### Trustworthiness reporting
 
@@ -291,7 +307,7 @@ The trustworthiness evaluator references the existing evaluation and prediction 
 - SHA-256 identities for checkpoint, manifest, and configs
 - runtime, model, split, threshold, IoU, and coordinate-space metadata
 
-No v3 validation image reached the 25-result cap. One test image exceeded it by one false positive. Validation and test score-to-match ECE were `0.1940` and `0.1878`, worse than v2 despite stronger detection metrics. These values measure whether displayed boxes match annotations under the declared policy; they are not disease-probability calibration.
+No v3 validation image reached the 25-result cap. One test image exceeded it by one historical false positive. The trust report structure remains useful provenance evidence, but its match and score-reliability values inherit the incorrect targets and are not valid plaque or disease calibration.
 
 ### Promotion to the application
 
@@ -303,7 +319,7 @@ Promotion changes configuration, not API routes:
 4. backend integration tests exercise the adapter and real checkpoint
 5. the browser consumes the unchanged `ScanRecord` response contract
 
-V3 promotion is complete. The backend default, PowerShell and CMD launchers, prediction model identity, integration smoke, full test suites, frontend build, and browser E2E all verify the unchanged application contract against the v3 checkpoint.
+V3 promotion is complete as historical application wiring. The backend default, PowerShell and CMD launchers, prediction model identity, integration smoke, full test suites, frontend build, and browser E2E verify the application contract, not current model quality. V4 is stopped and ineligible for promotion. A future condition model requires the admission, CUDA-preflight, pilot, validation, challenge, and integration gates in [Data strategy](DATA_STRATEGY.md).
 
 ## Configuration map
 
@@ -321,6 +337,8 @@ V3 promotion is complete. The backend default, PowerShell and CMD launchers, pre
 | v3 active application inference | `orthodontic_plaque_detection_mvp_v3_predict.toml` | prediction CLI and backend ML adapter |
 | v3 validation trust report | `orthodontic_plaque_detection_mvp_v3_trust_validation.toml` | trustworthiness evaluation CLI |
 | v3 test trust report | `orthodontic_plaque_detection_mvp_v3_trust_test.toml` | trustworthiness evaluation CLI |
+| stopped v4 diagnostic training | `orthodontic_plaque_detection_mvp_v4.toml` | historical training CLI evidence; do not resume |
+| v4 validation/resume configs | v4 evaluation and resume TOML files | present but not authorized for execution |
 
 ## Artifact map
 
@@ -336,9 +354,11 @@ V3 promotion is complete. The backend default, PowerShell and CMD launchers, pre
 | v3 validation trust report | `ml/runs/detection/orthodontic_plaque_part2_mvp_v3_trust_validation/trustworthiness_report.json` | ignored |
 | v3 test trust report | `ml/runs/detection/orthodontic_plaque_part2_mvp_v3_trust_test/trustworthiness_report.json` | ignored |
 | v3 prediction JSON | `ml/runs/detection/orthodontic_plaque_part2_mvp_v3_predictions/` | ignored |
+| stopped v4 checkpoints and metrics | `ml/runs/detection/orthodontic_plaque_part2_mvp_v4/` | ignored local evidence; no evaluation or promotion |
 | local scan records | `backend/var/scans.json` | ignored |
 | temporary ML uploads | `backend/var/ml-inputs/` | ignored and deleted after each inference |
 | frontend production build | `frontend/dist/` | ignored |
+| Playwright failure evidence and HTML report | `frontend/test-results/`, `frontend/playwright-report/` | ignored |
 
 Ignored artifacts remain local evidence. They are not silently deleted, committed, or treated as source files.
 
@@ -346,12 +366,12 @@ Ignored artifacts remain local evidence. They are not silently deleted, committe
 
 | Boundary | Primary controls |
 |---|---|
-| Browser | JPEG/PNG picker, explicit API origin |
+| Browser | JPEG/PNG MIME-and-extension preflight, explicit API origin, safe generic non-JSON error fallback |
 | API upload | MIME, extension, byte limit, non-empty content, magic bytes |
 | Filename | basename-only display value; generated storage names |
 | Temporary inference file | UUID name, suffix allowlist, containment, symlink rejection, `finally` cleanup |
 | Dataset | UTF-8/CSV/JSON contract, finite values, normalized fields, path containment, symlink/file checks |
-| Boxes | tolerance-bounded clipping, positive-area revalidation, gross-invalid rejection |
+| Boxes and labels | source-label allowlist, plaque-only target filtering, tolerance-bounded clipping, positive-area revalidation, gross-invalid rejection |
 | Checkpoint | expected path, state-dict contract, `weights_only=True`, compatibility validation |
 | Evaluation | validation-selected threshold, frozen test, concise domain errors, complete-split trust reports, provenance hashes |
 | API errors | request IDs, stable envelope, no internal traceback/path disclosure |
@@ -368,7 +388,8 @@ Ignored artifacts remain local evidence. They are not silently deleted, committe
 | Part 2 preparation and runtime dataset | `ml/tests/test_orthodontic_plaque.py`, `test_orthodontic_plaque_dataset.py` |
 | model, training, evaluation, trustworthiness, inference | `ml/tests/test_detection_modeling.py`, `test_detection_training.py`, `test_detection_evaluation.py`, `test_detection_trustworthiness.py`, `test_detection_inference.py` |
 | CLI contracts and concise failures | `ml/tests/test_dataset_cli.py`, `test_ml_cli_entrypoints.py` |
-| frontend | TypeScript production build and manual browser E2E; automated interaction/accessibility coverage remains pending |
+| frontend interaction and accessibility | `frontend/tests/orallens.spec.ts`; Chromium workflows plus axe WCAG A/AA checks, configured by `frontend/playwright.config.ts` |
+| frontend production integration | TypeScript/Vite production build plus manual real-backend/v3 browser scan |
 
 ## Where to make a change
 
@@ -386,8 +407,11 @@ Ignored artifacts remain local evidence. They are not silently deleted, committe
 | evaluation metric or matching | `ml/src/orallens_ml/evaluation/detection.py` plus evaluation tests |
 | box rendering | `frontend/src/main.tsx` `ImagePreview` |
 | result presentation | `frontend/src/main.tsx` `ResultPanel` |
+| frontend interaction/accessibility behavior | `frontend/src/main.tsx`, `frontend/src/styles.css`, then `frontend/tests/orallens.spec.ts` |
 
 ## Related documents
+
+- [Data strategy](DATA_STRATEGY.md) - condition-specific source decisions, admission gates, and future experiment plan
 
 - [Architecture](ARCHITECTURE.md) — structural boundaries and deployment context
 - [API](API.md) — HTTP contracts and client-visible errors
