@@ -13,6 +13,11 @@ from orallens_ml.evaluation.detection import (
     load_detection_evaluation_config,
     run_detection_evaluation,
 )
+from orallens_ml.evaluation.trustworthiness import (
+    DetectionTrustworthinessError,
+    load_detection_trustworthiness_config,
+    run_detection_trustworthiness,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -21,6 +26,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     detection_parser = subparsers.add_parser("detection")
     detection_parser.add_argument("--config", type=Path, required=True)
+    trustworthiness_parser = subparsers.add_parser("detection-trustworthiness")
+    trustworthiness_parser.add_argument("--config", type=Path, required=True)
     return parser
 
 
@@ -50,9 +57,26 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "metrics_path": str(result.metrics_path),
                 "status": "detection-evaluated",
             }
+        elif args.command == "detection-trustworthiness":
+            config = load_detection_trustworthiness_config(args.config)
+            result = run_detection_trustworthiness(config)
+            payload = {
+                "cap_affected_image_count": result.cap_affected_image_count,
+                "deployed_metrics": result.deployed_metrics,
+                "report_path": str(result.report_path),
+                "score_to_match_ece": result.score_to_match_ece,
+                "split": result.split,
+                "status": "detection-trustworthiness-evaluated",
+                "uncapped_metrics": result.uncapped_metrics,
+            }
         else:
             raise DetectionEvaluationError(f"Unknown command: {args.command}")
-    except (DetectionEvaluationError, OSError, RuntimeError) as exc:
+    except (
+        DetectionEvaluationError,
+        DetectionTrustworthinessError,
+        OSError,
+        RuntimeError,
+    ) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
@@ -62,4 +86,3 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
