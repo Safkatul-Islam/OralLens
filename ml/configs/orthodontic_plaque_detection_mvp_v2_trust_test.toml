@@ -1,0 +1,12 @@
+[evaluation]
+config_path = "ml/configs/orthodontic_plaque_detection_mvp_v2_test.toml"
+
+[inference]
+config_path = "ml/configs/orthodontic_plaque_detection_mvp_v2_predict.toml"
+
+[reporting]
+reliability_bins = 10
+top_failure_cases = 25
+
+[output]
+output_dir = "ml/runs/detection/orthodontic_plaque_part2_mvp_v2_trust_test"
