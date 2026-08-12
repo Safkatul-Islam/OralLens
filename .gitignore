@@ -125,6 +125,8 @@ frontend/.vite/
 frontend/.next/
 frontend/out/
 frontend/coverage/
+frontend/playwright-report/
+frontend/test-results/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -187,3 +189,6 @@ temp/
 .temp/
 *.tmp
 *.temp
+
+AGENTS.md
+RULES.md
