@@ -100,13 +100,23 @@ The first v3 browser check also exposed a trust issue: a raw detector score near
 
 **Lesson:** model promotion is incomplete if users cannot identify the deployed model or if presentation turns an uncalibrated ranking value into an implied probability.
 
+## 15. Automate the browser contract without overstating accessibility
+
+The frontend gained a Playwright Chromium suite that intercepts the API boundary and uses in-memory image bytes rather than patient data. It verifies keyboard order and focus, unsupported-file rejection before transmission, loading and completion announcements, v3 identity, raw score semantics, report limitations, overlay geometry, and safe structured/non-JSON error behavior. Axe-core checks WCAG A/AA rules in the initial and completed-result states.
+
+On Windows, Playwright's managed web-server teardown relies on a synchronous process-tree kill, which hung in the restricted development environment after all tests passed. The suite instead starts Vite through its project-local JavaScript API during global setup and returns an awaited in-process close callback. This keeps the suite self-contained without platform-specific shell cleanup or an additional dependency.
+
+**Lesson:** browser automation should verify the user-facing contract and clean up deterministically. Automated rule checks improve coverage but cannot replace manual assistive-technology and human-factors evaluation.
+
 ## Current verified state
 
 - end-to-end GPU-backed MVP: working
 - ML suite: `150 passed, 1 skipped`
 - backend suite: `24 passed, 1 skipped`
 - real backend-to-ML smoke: `1 passed`
+- frontend Playwright/axe suite: `5 passed`
 - frontend build and manual UI flow: passed
+- frontend dependency audit: `0` known vulnerabilities across `82` dependencies
 - v2 historical and v3 full-coverage validation/test/trust artifacts: retained locally
 - active application runtime: v3 at validation-selected threshold `0.85`
 - UI/report score semantics: raw detector ranking value, not a percentage or clinical probability
