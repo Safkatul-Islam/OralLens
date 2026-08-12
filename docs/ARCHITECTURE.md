@@ -41,7 +41,7 @@ InferencePipeline protocol
 
 | Component | Responsibility | Deliberately does not own |
 |---|---|---|
-| Frontend | File selection, preview, request submission, result presentation, box overlay | Model execution, clinical interpretation, persistent storage |
+| Frontend | File-selection preflight, preview, request submission, accessible state/result presentation, box overlay | Authoritative upload validation, model execution, clinical interpretation, persistent storage |
 | API routes | HTTP contracts and dependency access | Business logic and ML details |
 | `ScanService` | Upload validation, hashing, inference orchestration, report construction | Framework startup and detector internals |
 | Inference adapters | Stable backend-to-inference contract; mock or ML implementation | HTTP responses and storage |
@@ -51,7 +51,7 @@ InferencePipeline protocol
 
 ## Request lifecycle
 
-1. The frontend accepts JPEG or PNG and creates a multipart request.
+1. The frontend accepts a JPEG or PNG whose MIME type matches its filename extension, then creates a multipart request. This is a user-experience gate; the backend remains authoritative.
 2. FastAPI receives the upload at `POST /scans`.
 3. `ScanService` checks the declared MIME type and extension, reads in bounded chunks, enforces the size limit, rejects empty content, and checks the file signature.
 4. The service hashes the validated bytes with SHA-256.
@@ -134,13 +134,22 @@ Separate v3 trustworthiness configs reference the v3 evaluation and prediction c
 ### API and browser
 
 - CORS uses explicit local origins: `http://127.0.0.1:5173` and `http://localhost:5173`.
+- The frontend rejects unsupported MIME/extension pairs before transmission, while the API independently validates declared type, extension, size, non-empty content, and file signature.
 - Error handlers return structured messages and request IDs without exposing internal exception details.
+- Non-JSON API failures become a generic browser message rather than rendered response bodies.
 - The UI repeats the non-diagnostic limitations and directs health concerns to a licensed professional.
 - The API's compatibility field `confidence` is the maximum detector score. The UI labels it as a detector score, renders it without percentage conversion, and states that it is not a clinical probability.
+- Keyboard focus, alert/status announcements, minimum action height, and reduced-motion behavior are part of the frontend contract.
+
+### Frontend quality boundary
+
+Playwright runs the critical browser workflows in project-local Chromium. API responses are mocked at the network boundary for deterministic UI tests, while a separate manual browser scan covers the real backend-to-v3 integration. Axe-core checks WCAG A/AA rules in the initial and completed-result states.
+
+Browser automation does not establish complete accessibility. Screen-reader output, zoom/reflow, Windows high-contrast mode, touch input, and representative device layouts still require manual verification.
 
 ## Persistence and artifacts
 
-`JSONScanStore` is a local demonstration store under `backend/var`. ML checkpoints, metrics, predictions, trustworthiness reports, and prepared/raw data live under ignored `ml` directories. These artifacts support reproducibility and local evidence, but are not committed because they may be large, machine-specific, or derived from restricted data.
+`JSONScanStore` is a local demonstration store under `backend/var`. ML checkpoints, metrics, predictions, trustworthiness reports, prepared/raw data, frontend builds, and Playwright failure artifacts live under ignored directories. These artifacts support reproducibility and local evidence, but are not committed because they may be large, machine-specific, generated, or derived from restricted data.
 
 Trustworthiness reports are written atomically to dedicated validation and test run directories. They contain identifiers, boxes, match outcomes, and hashes, but do not copy source image bytes. Historical aggregate evaluation artifacts remain separate and are not overwritten.
 
