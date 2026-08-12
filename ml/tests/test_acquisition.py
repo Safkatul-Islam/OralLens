@@ -36,11 +36,21 @@ def artifact(payload: bytes = b"verified-payload", **overrides: object) -> Datas
 def write_config(path: Path, *, download_url: str | None = None) -> None:
     url = download_url or "https://data.mendeley.com/public-api/zip/example/download/3"
     path.write_text(
-        f'''schema_version = 1
+        f'''schema_version = 2
 dataset_id = "dataset"
 dataset_version = 3
 license = "CC BY 4.0"
 publisher = "Mendeley Data"
+source_family_id = "airc-labden"
+reviewed_on = "2026-08-08"
+roles = ["plaque_supervision"]
+grouping_keys = ["patient_id"]
+capture_context = "Standardized orthodontic photographs."
+limitations = ["Not representative of consumer phone photographs."]
+
+[label_semantics]
+"0" = "plaque_absent_region"
+"1" = "plaque_present_region"
 
 [[artifacts]]
 artifact_id = "part-1"
@@ -67,6 +77,12 @@ def test_load_release_config_accepts_allowlisted_source(tmp_path: Path) -> None:
     release = load_release_config(config)
 
     assert release.dataset_version == 3
+    assert release.roles == ("plaque_supervision",)
+    assert release.grouping_keys == ("patient_id",)
+    assert dict(release.label_semantics) == {
+        "0": "plaque_absent_region",
+        "1": "plaque_present_region",
+    }
     assert release.artifact("part-1").final_filename == "part-1.zip"
 
 
@@ -78,6 +94,10 @@ def test_project_config_matches_reviewed_mendeley_release() -> None:
 
     assert release.dataset_version == 3
     assert release.license == "CC BY 4.0"
+    assert release.source_family_id == "airc-labden-orthodontic-plaque"
+    assert release.reviewed_on == "2026-08-08"
+    assert release.roles == ("plaque_supervision",)
+    assert release.grouping_keys == ("patient_id",)
     assert set(artifacts) == {"part-1", "part-2"}
     assert artifacts["part-1"].sha256 == (
         "9ab308d919bae0ea6104e9f4c96336be19aa4841c830b8fca1db2f92e3ebe618"
@@ -119,6 +139,66 @@ def test_load_release_config_rejects_untrusted_download_urls(
     write_config(config, download_url=url)
 
     with pytest.raises(AcquisitionError, match="must be an HTTPS"):
+        load_release_config(config)
+
+
+def test_load_release_config_rejects_unknown_dataset_role(tmp_path: Path) -> None:
+    config = tmp_path / "source.toml"
+    write_config(config)
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            'roles = ["plaque_supervision"]',
+            'roles = ["diagnosis"]',
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AcquisitionError, match="unsupported dataset roles"):
+        load_release_config(config)
+
+
+def test_load_release_config_rejects_missing_grouping_keys(tmp_path: Path) -> None:
+    config = tmp_path / "source.toml"
+    write_config(config)
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            'grouping_keys = ["patient_id"]\n',
+            "",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AcquisitionError, match="grouping_keys must be a non-empty list"):
+        load_release_config(config)
+
+
+def test_load_release_config_rejects_incorrect_plaque_semantics(tmp_path: Path) -> None:
+    config = tmp_path / "source.toml"
+    write_config(config)
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            '"0" = "plaque_absent_region"',
+            '"0" = "plaque_present_region"',
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AcquisitionError, match="Plaque-supervision sources"):
+        load_release_config(config)
+
+
+def test_load_release_config_rejects_invalid_review_date(tmp_path: Path) -> None:
+    config = tmp_path / "source.toml"
+    write_config(config)
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            'reviewed_on = "2026-08-08"',
+            'reviewed_on = "2026-02-30"',
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AcquisitionError, match="valid calendar date"):
         load_release_config(config)
 
 
