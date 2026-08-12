@@ -260,7 +260,11 @@ def _validate_annotation(
         line_number,
         annotation_index,
     )
-    if class_id < 0 or tooth_id <= 0 or source_label_line <= 0:
+    if class_id not in {0, 1}:
+        raise OrthodonticPlaqueDatasetError(
+            f"Line {line_number}: annotation {annotation_index} class_id must be 0 or 1"
+        )
+    if tooth_id <= 0 or source_label_line <= 0:
         raise OrthodonticPlaqueDatasetError(
             f"Line {line_number}: annotation {annotation_index} has invalid integer fields"
         )
