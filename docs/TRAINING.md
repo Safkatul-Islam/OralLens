@@ -4,11 +4,14 @@
 
 This document records reproducible object-detection experiments for a portfolio and learning project. Reported precision, recall, F1, and IoU describe annotation matching on one orthodontic-plaque dataset. They are not sensitivity, specificity, diagnostic accuracy, patient risk, or clinical validation.
 
+> **Historical-results warning:** v1-v3 were trained and evaluated before a source-label semantic defect was corrected. Source label `0` means plaque absent in an annotated region, but the historical converter assigned every source box detector label `1`. The 1,170 affected annotations contaminate all v1-v3 losses and metrics. Those numbers are retained below to reproduce the experiment history, not as valid plaque-only performance evidence. No corrected post-defect model has yet been trained.
+
 ## Model contract
 
 - framework: PyTorch and TorchVision
 - architecture: Faster R-CNN with ResNet-50 FPN
-- classes: `0` background, `1` plaque candidate
+- source labels: `0` plaque absent in the annotated region, `1` plaque present
+- detector classes: `0` implicit background, `1` plaque candidate
 - initialization: official TorchVision default pretrained weights
 - image size range: 512 to 768 pixels
 - trainable backbone layers: 3
@@ -25,6 +28,8 @@ Only the verified Part 2 orthodontic-plaque material is used. The prepared manif
 | Test | 858 | 12 | 11,070 |
 
 The manifest loader validates schema, split values, safe paths, extensions, JSON annotations, finite numeric fields, normalized values, positive annotation counts, root containment, file existence, and symlink policy.
+
+Target conversion validates all source labels and boxes, keeps only source label `1` as plaque objects, and supports an empty positive target when a valid image contains no plaque-present regions. The prepared manifest contains 1,170 source label `0` annotations and 64,068 source label `1` annotations; every current image row contains at least one label `1`.
 
 ### Boundary policy for normalized boxes
 
@@ -53,7 +58,7 @@ The complete manifest audit found two affected annotations in one test image. Th
 
 Run commands below from the repository root with the project-local ML environment.
 
-## v1 baseline
+## Historical v1 baseline
 
 Config: `ml/configs/orthodontic_plaque_detection_mvp.toml`
 
@@ -70,9 +75,9 @@ A 64-image validation calibration selected threshold `0.15` from the tested valu
 |---:|---:|---:|---:|---:|---:|
 | 0.0489 | 0.1361 | 0.0720 | 86 | 1,671 | 546 |
 
-This weak baseline established that the pipeline ran but was not a useful final operating point.
+This weak baseline established that the historical pipeline ran but was not a useful final operating point. Its targets included plaque-absent source regions as positive objects.
 
-## v2 training experiment
+## Historical v2 training experiment
 
 Config: `ml/configs/orthodontic_plaque_detection_mvp_v2.toml`
 
@@ -104,14 +109,14 @@ Loss history:
 | 2 | 0.8170 | 0.6192 |
 | 3 | 0.7662 | 0.6145 |
 
-Both losses decreased across the bounded run; no validation-loss reversal was observed. This is useful experiment evidence, not proof of generalization.
+Both losses decreased across the bounded run; no validation-loss reversal was observed. Because the targets used the incorrect source-label mapping, this is historical optimization evidence rather than evidence of a valid plaque detector.
 
 Local outputs:
 
 - `ml/runs/detection/orthodontic_plaque_part2_mvp_v2/checkpoint_last.pt`
 - `ml/runs/detection/orthodontic_plaque_part2_mvp_v2/metrics.json`
 
-## V2 full-validation threshold selection
+## Historical v2 full-validation threshold selection
 
 Config: `ml/configs/orthodontic_plaque_detection_mvp_v2_eval.toml`
 
@@ -133,7 +138,7 @@ At `0.65`: TP 4,562; FP 1,400; FN 1,508; prediction count 5,962; mean matched Io
 
 The selected threshold was copied to the prediction and held-out test configs before test evaluation.
 
-## V2 fixed-threshold test evaluation
+## Historical v2 fixed-threshold test evaluation
 
 Config: `ml/configs/orthodontic_plaque_detection_mvp_v2_test.toml`
 
@@ -155,7 +160,7 @@ Artifact: `ml/runs/detection/orthodontic_plaque_part2_mvp_v2_test/evaluation_met
 
 The test result is a final measurement at the validation-selected operating point. It must not drive a threshold change.
 
-## V2 trustworthiness evaluation
+## Historical v2 trustworthiness evaluation
 
 The trustworthiness evaluator measured the then-application-facing v2 policy without changing the frozen model or threshold. It references the historical evaluation configs and v2 prediction config, then compares score threshold `0.65`, IoU `0.5`, and maximum 25 detections per image with the uncapped evaluator.
 
@@ -212,7 +217,7 @@ Local ignored artifacts:
 - `ml/runs/detection/orthodontic_plaque_part2_mvp_v2_trust_validation/trustworthiness_report.json`
 - `ml/runs/detection/orthodontic_plaque_part2_mvp_v2_trust_test/trustworthiness_report.json`
 
-## v3 full-coverage experiment
+## Historical v3 full-coverage experiment
 
 Config: `ml/configs/orthodontic_plaque_detection_mvp_v3.toml`
 
@@ -258,9 +263,9 @@ Local ignored outputs:
 - `ml/runs/detection/orthodontic_plaque_part2_mvp_v3/checkpoint_best.pt`
 - `ml/runs/detection/orthodontic_plaque_part2_mvp_v3/metrics.json`
 
-The general training checkpoint includes the model state, optimizer state, completed epoch, metrics, device type, and CPU/CUDA RNG state. It is loaded with `weights_only=True`. This supports interruption recovery; it does not make an old model checkpoint a clinically validated model.
+The general training checkpoint includes the model state, optimizer state, completed epoch, metrics, device type, and CPU/CUDA RNG state. It is loaded with `weights_only=True`. This supports interruption recovery. Because the checkpoint learned the incorrect target mapping, v4 must initialize fresh from official pretrained weights and must not resume v3.
 
-### V3 validation threshold selection
+### Historical v3 validation threshold selection
 
 Config: `ml/configs/orthodontic_plaque_detection_mvp_v3_eval.toml`
 
@@ -287,7 +292,7 @@ Compared with the selected v2 validation point, v3 changed:
 
 The selected threshold was copied to the v3 prediction and test configs before the v3 test run.
 
-### V3 fixed-threshold internal test benchmark
+### Historical v3 fixed-threshold internal test benchmark
 
 Config: `ml/configs/orthodontic_plaque_detection_mvp_v3_test.toml`
 
@@ -309,7 +314,7 @@ Artifact: `ml/runs/detection/orthodontic_plaque_part2_mvp_v3_test/evaluation_met
 
 The test did not change the threshold or model. However, the cohort has now been inspected for v2 and v3. It remains useful as an internal fixed-policy benchmark, but it is not a pristine external evaluation boundary for future model generations or medical claims.
 
-### V3 trustworthiness evidence
+### Historical v3 trustworthiness evidence
 
 Validation config: `ml/configs/orthodontic_plaque_detection_mvp_v3_trust_validation.toml`
 
@@ -344,6 +349,8 @@ Active v3 config: `ml/configs/orthodontic_plaque_detection_mvp_v3_predict.toml`
 
 It declares model identity `orthodontic-plaque-mvp-v3`, fixes score threshold `0.85`, and caps returned detections at 25.
 
+V3 remains wired into the local application as historical end-to-end engineering evidence. It is not a corrected plaque model, and its poor behavior on consumer-style challenge images is consistent with both the target defect and the narrow standardized training domain. Do not promote its historical metrics as present model quality.
+
 ```powershell
 ml\.venv\Scripts\python.exe -B -m orallens_ml.cli.predict detection --config "ml\configs\orthodontic_plaque_detection_mvp_v3_predict.toml" --image "C:\path\to\image.jpg"
 ```
@@ -352,14 +359,51 @@ Prediction JSON is retained locally under the configured ignored run directory. 
 
 ## Verification
 
-The latest complete ML suite: `150 passed, 1 skipped`. The skip is limited to a Windows symbolic-link case when the current account lacks link-creation privileges; platform-independent containment tests still run.
+The latest complete ML suite after the target-conversion, source-admission, and source-aware manifest corrections: `174 passed, 1 skipped`. The skip is limited to a Windows symbolic-link case when the current account lacks link-creation privileges; platform-independent containment tests still run.
 
-Covered behavior includes manifest and path validation, normalized-box handling, training/evaluation/inference contracts, checkpoint safety, boundary clipping and degeneration, concise CLI errors, and regressions.
+Covered behavior includes manifest and path validation, normalized-box handling, source-label validation and plaque-only filtering, empty positive targets, training/evaluation/inference contracts, checkpoint safety, boundary clipping and degeneration, concise CLI errors, and regressions.
+
+## Stopped v4 diagnostic
+
+V4 started fresh with the corrected plaque-present target conversion and source-aware manifest. It still used the same underlying AIRC image distribution. The user stopped training before epoch 3 after the second completed epoch showed a clear validation-loss reversal.
+
+Config: `ml/configs/orthodontic_plaque_detection_mvp_v4.toml`
+
+Local ignored output directory: `ml/runs/detection/orthodontic_plaque_part2_mvp_v4`
+
+| Completed epoch | Training loss | Validation loss |
+|---:|---:|---:|
+| 1 | `0.7966761603586116` | `0.8249539341299962` |
+| 2 | `0.6149270393257503` | `1.028658177671779` |
+
+Training loss decreased by approximately `22.8%` from epoch 1 to epoch 2, while validation loss increased by approximately `24.7%`. `checkpoint_best.pt` is epoch 1; `checkpoint_last.pt` is epoch 2. Read-only `weights_only=True` inspection confirmed both checkpoint structures, `device_type="cuda"`, and one recorded CUDA RNG state. No temporary checkpoint files remained after the stop.
+
+The device record confirms use of the CUDA code path for the completed checkpoints. It does not prove sustained GPU utilization because the trainer did not record utilization, throughput, data-loading time, or peak memory. The v4 config also used `batch_size = 1`, `num_workers = 0`, and `device = "auto"`, so future training needs an explicit CUDA requirement and telemetry rather than inference from Task Manager alone.
+
+V4 has no authorized validation sweep, threshold, fixed-threshold test result, prediction result, backend integration, or promotion. The existing evaluation and resume configs must not be run. Do not resume epoch 3 or cite these losses as condition-localization performance.
+
+## Authorization gate for any future experiment
+
+Before another model run:
+
+1. freeze one condition-specific task: ordinary-RGB visible plaque or ordinary-RGB supragingival calculus
+2. admit genuinely complementary target-domain data through the provenance, license, patient/source, acquisition, and annotation gate
+3. keep plaque and calculus labels separate and use spatial supervision compatible with the chosen output
+4. define patient-, source-, and derivative-aware development and locked challenge boundaries
+5. require CUDA explicitly and log device, model/tensor placement, batch/epoch timing, throughput, utilization samples, and peak GPU memory
+6. run a monitored smoke test before a small pilot
+7. predeclare the pilot baseline, budget, success criteria, and early-stop rules
+8. create a fresh experiment identity and output directory; do not resume v1-v4
+9. select policy on validation only and preserve the locked challenge boundary
+
+Dataset admission and the go/no-go gate are defined in [Data strategy](DATA_STRATEGY.md).
 
 ## Limitations
 
 - one specialized dataset and task
 - only 74 patient groups despite thousands of images and annotations
+- the active v3 model and all v1-v3 metrics use the incorrect historical target mapping
+- the corrected v4 run stopped after early validation-loss reversal and has no evaluation or promotion evidence
 - every current manifest row contains positive annotations, so the dataset cannot estimate clinical specificity or NPV in a representative negative population
 - no external, multi-site, temporal, or prospective validation
 - no demographic or acquisition-device subgroup evidence
@@ -368,4 +412,4 @@ Covered behavior includes manifest and path validation, normalized-box handling,
 - annotations and source augmentation may encode dataset-specific conventions
 - the internal test cohort is no longer a pristine evidence boundary for future model generations
 
-See [Dataset card](DATASET_CARD.md), [Intended use and claims](INTENDED_USE_AND_CLAIMS.md), [Clinical evidence plan](CLINICAL_EVIDENCE_PLAN.md), and [ML guide](../ml/README.md).
+See [Data strategy](DATA_STRATEGY.md), [Dataset card](DATASET_CARD.md), [Intended use and claims](INTENDED_USE_AND_CLAIMS.md), and [ML guide](../ml/README.md).
