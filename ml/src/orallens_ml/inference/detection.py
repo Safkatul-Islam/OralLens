@@ -35,6 +35,7 @@ class DetectionInferenceError(ValueError):
 class DetectionInferenceConfig:
     """Validated settings for one detection inference run."""
 
+    model_name: str
     checkpoint_path: Path
     output_dir: Path
     num_classes: int
@@ -60,6 +61,7 @@ class DetectionPrediction:
 class DetectionInferenceResult:
     """Files and predictions produced by an inference run."""
 
+    model_name: str
     image_path: Path
     output_path: Path
     image_width: int
@@ -84,6 +86,7 @@ def load_detection_inference_config(config_path: Path) -> DetectionInferenceConf
     output = _table(payload, "output")
 
     return DetectionInferenceConfig(
+        model_name=_model_name(model, "model_name"),
         checkpoint_path=_path_value(model, "checkpoint_path"),
         output_dir=_path_value(output, "output_dir"),
         num_classes=_positive_int(model, "num_classes"),
@@ -135,6 +138,7 @@ def run_detection_inference(
                 "image_height": height,
                 "image_path": str(Path(image_path)),
                 "image_width": width,
+                "model_name": config.model_name,
                 "prediction_count": len(predictions),
                 "predictions": [
                     {
@@ -151,6 +155,7 @@ def run_detection_inference(
         encoding="utf-8",
     )
     return DetectionInferenceResult(
+        model_name=config.model_name,
         image_path=Path(image_path),
         output_path=output_path,
         image_width=width,
@@ -327,6 +332,20 @@ def _path_value(payload: dict[str, object], key: str) -> Path:
     if "\x00" in value:
         raise DetectionInferenceError(f"{key} contains a null byte")
     return Path(value)
+
+
+def _model_name(payload: dict[str, object], key: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str):
+        raise DetectionInferenceError(f"{key} must be a string")
+    normalized = value.strip()
+    if not normalized or len(normalized) > 100:
+        raise DetectionInferenceError(
+            f"{key} must contain between 1 and 100 characters"
+        )
+    if any(ord(character) < 32 or ord(character) == 127 for character in normalized):
+        raise DetectionInferenceError(f"{key} contains a control character")
+    return normalized
 
 
 def _positive_int(payload: dict[str, object], key: str) -> int:
