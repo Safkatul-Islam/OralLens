@@ -1,6 +1,7 @@
 [model]
 checkpoint_path = "ml/runs/detection/orthodontic_plaque_part2_smoke/checkpoint_last.pt"
 num_classes = 2
+model_name = "orthodontic-plaque-smoke-v1"
 image_min_size = 256
 image_max_size = 384
 trainable_backbone_layers = 0

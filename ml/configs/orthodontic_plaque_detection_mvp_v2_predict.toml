@@ -1,4 +1,5 @@
 [model]
+model_name = "orthodontic-plaque-mvp-v2"
 checkpoint_path = "ml/runs/detection/orthodontic_plaque_part2_mvp_v2/checkpoint_last.pt"
 num_classes = 2
 image_min_size = 512
