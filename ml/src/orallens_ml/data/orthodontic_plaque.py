@@ -13,6 +13,13 @@ from typing import Literal
 from PIL import Image, UnidentifiedImageError
 
 from orallens_ml.data.acquisition import AcquisitionError
+from orallens_ml.data.detection_manifest import (
+    DETECTION_MANIFEST_IDENTITY_COLUMNS,
+    DETECTION_MANIFEST_SCHEMA_VERSION,
+    DetectionManifestError,
+    DetectionManifestIdentity,
+    validate_detection_manifest_identities,
+)
 
 _REQUIRED_SPLIT_COLUMNS = ("patient", "Image-Filename", "Recommend")
 _ALLOWED_SPLITS = frozenset({"train", "val", "validation", "test"})
@@ -24,13 +31,20 @@ _ANNOTATION_FILTER_CODES = frozenset(
     {
         "invalid_label_field_count",
         "invalid_label_number",
-        "negative_class_id",
+        "unsupported_class_id",
         "label_coordinate_out_of_bounds",
         "non_positive_box_size",
         "unknown_tooth_id",
     }
 )
 _MANIFEST_IMAGE_COLUMNS = ("sample_id", "image_relative_path")
+_DERIVATIVE_SUFFIXES = (
+    ("_brightness-down", "brightness-down"),
+    ("_brightness-up", "brightness-up"),
+    ("_flip_horizontal", "flip-horizontal"),
+    ("_rotate-left-15", "rotate-left-15"),
+    ("_rotate-right-15", "rotate-right-15"),
+)
 
 
 class OrthodonticPlaqueAuditError(AcquisitionError):
@@ -99,6 +113,8 @@ class Part2Sample:
 
     sample_id: str
     patient_id: str
+    derivative_group_id: str
+    variant: str
     split: Literal["train", "validation", "test"]
     image_relative_path: PurePosixPath
     source_image_filename: str
@@ -424,10 +440,13 @@ def build_orthodontic_plaque_part2_manifest(
             continue
 
         image_manifest_path = PurePosixPath("data") / "images" / patient / image_relative
+        derivative_group_id, variant = _derive_part2_variant_identity(image_stem)
         samples.append(
             Part2Sample(
                 sample_id=image_stem,
                 patient_id=patient.casefold(),
+                derivative_group_id=derivative_group_id,
+                variant=variant,
                 split=split,
                 image_relative_path=image_manifest_path,
                 source_image_filename=image_filename,
@@ -491,14 +510,43 @@ def preflight_part2_output_paths(manifest_output: Path, exclusions_output: Path)
     _prepare_new_output_file(exclusions_path)
 
 
-def write_part2_manifest_csv(samples: tuple[Part2Sample, ...], output_path: Path) -> None:
+def write_part2_manifest_csv(
+    samples: tuple[Part2Sample, ...],
+    output_path: Path,
+    *,
+    dataset_id: str,
+    dataset_version: int,
+    source_family_id: str,
+    source_artifact_id: str,
+) -> None:
     """Write retained Part 2 samples as a UTF-8 CSV with embedded annotations JSON."""
+
+    identities = (
+        DetectionManifestIdentity(
+            manifest_schema_version=DETECTION_MANIFEST_SCHEMA_VERSION,
+            dataset_id=dataset_id,
+            dataset_version=dataset_version,
+            source_family_id=source_family_id,
+            source_artifact_id=source_artifact_id,
+            sample_id=sample.sample_id,
+            split_group_id=sample.patient_id,
+            derivative_group_id=sample.derivative_group_id,
+            variant=sample.variant,
+            split=sample.split,
+        )
+        for sample in samples
+    )
+    try:
+        validated_identities = validate_detection_manifest_identities(identities)
+    except DetectionManifestError as exc:
+        raise OrthodonticPlaqueAuditError(str(exc)) from exc
 
     path = _prepare_new_output_file(output_path)
     with path.open("x", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(
             handle,
             fieldnames=(
+                *DETECTION_MANIFEST_IDENTITY_COLUMNS,
                 "sample_id",
                 "patient_id",
                 "split",
@@ -510,9 +558,17 @@ def write_part2_manifest_csv(samples: tuple[Part2Sample, ...], output_path: Path
             ),
         )
         writer.writeheader()
-        for sample in samples:
+        for sample, identity in zip(samples, validated_identities, strict=True):
             writer.writerow(
                 {
+                    "manifest_schema_version": str(identity.manifest_schema_version),
+                    "dataset_id": identity.dataset_id,
+                    "dataset_version": str(identity.dataset_version),
+                    "source_family_id": identity.source_family_id,
+                    "source_artifact_id": identity.source_artifact_id,
+                    "split_group_id": identity.split_group_id,
+                    "derivative_group_id": identity.derivative_group_id,
+                    "variant": identity.variant,
                     "sample_id": sample.sample_id,
                     "patient_id": sample.patient_id,
                     "split": sample.split,
@@ -538,6 +594,20 @@ def write_part2_manifest_csv(samples: tuple[Part2Sample, ...], output_path: Path
                     ),
                 }
             )
+
+
+def _derive_part2_variant_identity(sample_id: str) -> tuple[str, str]:
+    """Return the original-image family and exact publisher variant."""
+
+    for suffix, variant in _DERIVATIVE_SUFFIXES:
+        if sample_id.endswith(suffix):
+            derivative_group_id = sample_id.removesuffix(suffix)
+            if not derivative_group_id:
+                raise OrthodonticPlaqueAuditError(
+                    f"Invalid derivative sample identity: {sample_id!r}"
+                )
+            return derivative_group_id, variant
+    return sample_id, "original"
 
 
 def write_part2_exclusions_csv(
@@ -846,11 +916,11 @@ def _parse_label_row(
             label_line=label_line,
         )
 
-    if class_id < 0:
+    if class_id not in {0, 1}:
         return OrthodonticPlaqueAuditIssue(
-            code="negative_class_id",
+            code="unsupported_class_id",
             severity="error",
-            message="Label row has a negative class id",
+            message="Label row class id must be 0 or 1",
             csv_line=csv_line,
             label_line=label_line,
         )
@@ -1141,11 +1211,11 @@ def _audit_label_file(
             )
             continue
 
-        if class_id < 0:
+        if class_id not in {0, 1}:
             _add_issue(
                 issues,
-                code="negative_class_id",
-                message="Label row has a negative class id",
+                code="unsupported_class_id",
+                message="Label row class id must be 0 or 1",
                 csv_line=line_number,
                 label_line=label_line_number,
             )
