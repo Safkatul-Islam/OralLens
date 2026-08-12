@@ -104,6 +104,20 @@ def test_audit_orthodontic_plaque_source_rejects_bad_label_row(tmp_path: Path) -
     assert "label_coordinate_out_of_bounds" in {issue.code for issue in report.issues}
 
 
+def test_audit_orthodontic_plaque_source_rejects_unsupported_class_id(
+    tmp_path: Path,
+) -> None:
+    write_source_dataset(
+        tmp_path,
+        label_payload="2 0.500000 0.500000 0.250000 0.250000 7\n",
+    )
+
+    report = audit_orthodontic_plaque_source(tmp_path)
+
+    assert not report.is_valid
+    assert report.issue_counts == {"unsupported_class_id": 1}
+
+
 def test_audit_orthodontic_plaque_source_rejects_unknown_tooth_id(tmp_path: Path) -> None:
     write_source_dataset(tmp_path, label_payload="1 0.500000 0.500000 0.250000 0.250000 99\n")
 
@@ -175,10 +189,31 @@ def test_part2_manifest_builder_filters_invalid_annotation_rows(tmp_path: Path) 
     samples, report = build_orthodontic_plaque_part2_manifest(tmp_path)
 
     assert len(samples) == 1
+    assert samples[0].derivative_group_id == "patient0001_20260101_bottom-left"
+    assert samples[0].variant == "original"
     assert len(samples[0].annotations) == 1
     assert samples[0].annotations[0].width == 0.25
     assert report.filtered_annotation_count == 1
     assert report.issue_counts == {"non_positive_box_size": 1}
+
+
+def test_part2_manifest_builder_filters_unsupported_class_id(tmp_path: Path) -> None:
+    write_source_dataset(
+        tmp_path,
+        label_payload="\n".join(
+            [
+                "2 0.500000 0.500000 0.250000 0.250000 7",
+                "1 0.500000 0.500000 0.250000 0.250000 7",
+            ]
+        ),
+    )
+
+    samples, report = build_orthodontic_plaque_part2_manifest(tmp_path)
+
+    assert len(samples) == 1
+    assert [annotation.class_id for annotation in samples[0].annotations] == [1]
+    assert report.filtered_annotation_count == 1
+    assert report.issue_counts == {"unsupported_class_id": 1}
 
 
 def test_part2_manifest_builder_excludes_empty_label_sample(tmp_path: Path) -> None:
@@ -233,6 +268,20 @@ def test_part2_manifest_builder_normalizes_validation_split(tmp_path: Path) -> N
     assert report.split_counts == {"validation": 1}
 
 
+def test_part2_manifest_builder_tracks_publisher_derivative_family(
+    tmp_path: Path,
+) -> None:
+    write_source_dataset(
+        tmp_path,
+        image_filename="patient0001_20260101_bottom-left_rotate-right-15.jpg",
+    )
+
+    samples, _ = build_orthodontic_plaque_part2_manifest(tmp_path)
+
+    assert samples[0].derivative_group_id == "patient0001_20260101_bottom-left"
+    assert samples[0].variant == "rotate-right-15"
+
+
 def test_part2_manifest_builder_rejects_duplicate_retained_sample_ids(
     tmp_path: Path,
 ) -> None:
@@ -265,12 +314,27 @@ def test_part2_manifest_builder_writes_outputs(tmp_path: Path) -> None:
     manifest_path = tmp_path / "manifest.csv"
     exclusions_path = tmp_path / "exclusions.csv"
 
-    write_part2_manifest_csv(samples, manifest_path)
+    write_part2_manifest_csv(
+        samples,
+        manifest_path,
+        dataset_id="orthodontic-plaque-fixed-labial",
+        dataset_version=3,
+        source_family_id="airc-labden-orthodontic-plaque",
+        source_artifact_id="part-2",
+    )
     write_part2_exclusions_csv(report.exclusions, exclusions_path)
 
     with manifest_path.open("r", encoding="utf-8", newline="") as manifest_handle:
         manifest_reader = csv.DictReader(manifest_handle)
         assert manifest_reader.fieldnames == [
+            "manifest_schema_version",
+            "dataset_id",
+            "dataset_version",
+            "source_family_id",
+            "source_artifact_id",
+            "split_group_id",
+            "derivative_group_id",
+            "variant",
             "sample_id",
             "patient_id",
             "split",
@@ -296,6 +360,16 @@ def test_part2_manifest_builder_writes_outputs(tmp_path: Path) -> None:
         ]
         exclusion_rows = list(exclusions_reader)
     assert manifest_rows[0]["sample_id"] == "patient0001_20260101_bottom-left"
+    assert manifest_rows[0]["manifest_schema_version"] == "1"
+    assert manifest_rows[0]["dataset_id"] == "orthodontic-plaque-fixed-labial"
+    assert manifest_rows[0]["dataset_version"] == "3"
+    assert manifest_rows[0]["source_family_id"] == "airc-labden-orthodontic-plaque"
+    assert manifest_rows[0]["source_artifact_id"] == "part-2"
+    assert manifest_rows[0]["split_group_id"] == "patient0001"
+    assert manifest_rows[0]["derivative_group_id"] == (
+        "patient0001_20260101_bottom-left"
+    )
+    assert manifest_rows[0]["variant"] == "original"
     assert manifest_rows[0]["split"] == "train"
     assert manifest_rows[0]["image_relative_path"] == (
         "data/images/patient0001/patient0001_20260101_bottom-left.jpg"
