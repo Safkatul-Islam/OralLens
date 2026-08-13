@@ -242,7 +242,7 @@ Promotion may be considered only when:
 ## Immediate actions
 
 1. keep ODS deferred unless its maintainers provide the documented license, provenance, grouping, annotation, and integrity clarifications
-2. send the two reviewed drafts in [Dataset access requests](DATA_ACCESS_REQUESTS.md); do not imply that article open access licenses the datasets, and treat any response as evidence for a separate admission decision
+2. treat any author response to an outstanding dataset access request as evidence for a separate admission decision; request status is tracked outside version control
 3. specify and implement the image-quality, oral-ROI, and abstention contract with tests
 4. upgrade the trainer preflight to require CUDA and emit auditable runtime telemetry before another experiment
 5. prepare a new source-neutral manifest and condition adapter only after the admitted data and split policy are fixed
@@ -252,7 +252,6 @@ Promotion may be considered only when:
 
 - [Dataset card](DATASET_CARD.md)
 - [Data acquisition](DATA_ACQUISITION.md)
-- [Dataset access requests](DATA_ACCESS_REQUESTS.md)
 - [Training and evaluation](TRAINING.md)
 - [Intended use and claims](INTENDED_USE_AND_CLAIMS.md)
 - [Pipeline](PIPELINE.md)
