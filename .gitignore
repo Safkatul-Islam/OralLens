@@ -201,3 +201,10 @@ RULES.md
 .agents/
 .claude/
 skills-lock.json
+
+# ------------------------------------------------------------
+# Local personal notes
+# Outreach tracking holds third-party contacts and correspondence
+# status; keep it off the public repository.
+# ------------------------------------------------------------
+docs/DATA_ACCESS_REQUESTS.md
