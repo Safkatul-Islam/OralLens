@@ -152,7 +152,6 @@ This can make the screening-support demonstration more credible; it cannot suppo
 - [Dataset card](docs/DATASET_CARD.md) - provenance, splits, validation, and limitations
 - [Data acquisition](docs/DATA_ACQUISITION.md) - controlled preparation workflow for the current source dataset
 - [Data strategy](docs/DATA_STRATEGY.md) - condition-specific data roles, source decisions, admission gates, and future training criteria
-- [Dataset access requests](docs/DATA_ACCESS_REQUESTS.md) - reviewed author-request drafts and response admission checklist
 - [ML environment](docs/ML_ENVIRONMENT.md) - reproducible local environment and commands
 - [Learning log](docs/LEARNING_LOG.md) - engineering decisions and lessons
 - [Backend guide](backend/README.md), [Frontend guide](frontend/README.md), [ML guide](ml/README.md)
