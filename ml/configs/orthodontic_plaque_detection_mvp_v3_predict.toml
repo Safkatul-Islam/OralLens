@@ -12,5 +12,13 @@ device = "auto"
 score_threshold = 0.85
 max_detections = 25
 
+[input_policy]
+enabled = true
+min_short_side = 256
+max_pixels = 30000000
+min_mean_luminance = 0.05
+max_mean_luminance = 0.98
+min_luminance_stddev = 0.02
+
 [output]
 output_dir = "ml/runs/detection/orthodontic_plaque_part2_mvp_v3_predictions"
