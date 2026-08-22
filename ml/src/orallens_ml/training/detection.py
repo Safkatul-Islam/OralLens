@@ -17,7 +17,9 @@ from torch import nn
 from torch import Tensor
 from torch.nn import Module
 from torch.utils.data import DataLoader
+from torchvision import tv_tensors
 from torchvision.ops import clip_boxes_to_image
+from torchvision.transforms import v2
 
 from orallens_ml.data.orthodontic_plaque_dataset import (
     OrthodonticPlaquePart2Dataset,
@@ -37,12 +39,16 @@ WeightsName = Literal["none", "default"]
 # therefore produce derived corners just outside the image by half a rounding
 # unit even when every source center/size value remains valid.
 _NORMALIZED_BOX_BOUNDARY_TOLERANCE = 1e-6
+_AUGMENTED_IMAGE_BOUNDARY_TOLERANCE = 1e-6
 _LAST_CHECKPOINT_FILENAME = "checkpoint_last.pt"
 _BEST_CHECKPOINT_FILENAME = "checkpoint_best.pt"
 _METRICS_FILENAME = "metrics.json"
 _RESUME_COMPATIBILITY_FIELDS = (
     "batch_size",
+    "augmentation",
     "dataset_root",
+    "dataset_variant",
+    "excluded_sample_id_suffixes",
     "image_max_size",
     "image_min_size",
     "learning_rate",
@@ -60,6 +66,23 @@ _RESUME_COMPATIBILITY_FIELDS = (
 
 class DetectionTrainingError(ValueError):
     """Raised when detection training cannot start safely."""
+
+
+@dataclass(frozen=True, slots=True)
+class DetectionAugmentationConfig:
+    """Conservative online augmentation settings for detection training."""
+
+    enabled: bool = False
+    horizontal_flip_probability: float = 0.0
+    color_jitter_probability: float = 0.0
+    brightness: float = 0.0
+    contrast: float = 0.0
+    saturation: float = 0.0
+    hue: float = 0.0
+    gaussian_blur_probability: float = 0.0
+    gaussian_blur_kernel_size: int = 3
+    gaussian_blur_sigma_min: float = 0.1
+    gaussian_blur_sigma_max: float = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +108,9 @@ class DetectionTrainingConfig:
     max_train_batches: int | None = None
     max_validation_batches: int | None = None
     resume_checkpoint_path: Path | None = None
+    dataset_variant: str | None = None
+    excluded_sample_id_suffixes: tuple[str, ...] = ()
+    augmentation: DetectionAugmentationConfig = DetectionAugmentationConfig()
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +159,7 @@ def load_detection_training_config(config_path: Path) -> DetectionTrainingConfig
     data = _table(payload, "data")
     model = _table(payload, "model")
     output = _table(payload, "output")
+    augmentation = _optional_table(payload, "augmentation")
 
     return DetectionTrainingConfig(
         dataset_root=_path_value(data, "dataset_root"),
@@ -162,6 +189,12 @@ def load_detection_training_config(config_path: Path) -> DetectionTrainingConfig
             training,
             "resume_checkpoint_path",
         ),
+        dataset_variant=_optional_text(data, "variant"),
+        excluded_sample_id_suffixes=_optional_text_list(
+            data,
+            "excluded_sample_id_suffixes",
+        ),
+        augmentation=_augmentation_config(augmentation),
     )
 
 
@@ -268,6 +301,15 @@ def run_detection_training(
     device = _select_device(config.device)
     train_loader = _build_loader(config, split="train", shuffle=True)
     validation_loader = _build_loader(config, split="validation", shuffle=False)
+    training_augmentation = (
+        _DetectionOnlineAugmenter(
+            config.augmentation,
+            image_min_size=config.image_min_size,
+            image_max_size=config.image_max_size,
+        )
+        if config.augmentation.enabled
+        else None
+    )
     try:
         model = model_factory(config).to(device)
     except DetectionModelError as exc:
@@ -306,6 +348,7 @@ def run_detection_training(
             optimizer=optimizer,
             num_classes=config.num_classes,
             max_batches=config.max_train_batches,
+            augmentation=training_augmentation,
         )
         validation_loss = _run_loss_epoch(
             model,
@@ -314,6 +357,7 @@ def run_detection_training(
             optimizer=None,
             num_classes=config.num_classes,
             max_batches=config.max_validation_batches,
+            augmentation=None,
         )
         epoch_metric = EpochMetrics(
             epoch=epoch,
@@ -592,6 +636,7 @@ def _run_loss_epoch(
     optimizer: torch.optim.Optimizer | None,
     num_classes: int,
     max_batches: int | None,
+    augmentation: _DetectionOnlineAugmenter | None = None,
 ) -> float:
     model.train()
     total_loss = 0.0
@@ -602,19 +647,23 @@ def _run_loss_epoch(
         for batch_index, (images, raw_targets) in enumerate(loader):
             if max_batches is not None and batch_index >= max_batches:
                 break
-            image_batch = [image.to(device) for image in images]
-            target_batch = [
-                {
-                    key: value.to(device)
-                    for key, value in make_detection_target(
-                        image,
-                        target,
-                        image_id=sample_offset + target_index,
-                        num_classes=num_classes,
-                    ).items()
+            image_batch: list[Tensor] = []
+            target_batch: list[dict[str, Tensor]] = []
+            for target_index, (image, target) in enumerate(zip(images, raw_targets)):
+                prepared_target = make_detection_target(
+                    image,
+                    target,
+                    image_id=sample_offset + target_index,
+                    num_classes=num_classes,
+                )
+                image = image.to(device)
+                prepared_target = {
+                    key: value.to(device) for key, value in prepared_target.items()
                 }
-                for target_index, (image, target) in enumerate(zip(images, raw_targets))
-            ]
+                if augmentation is not None:
+                    image, prepared_target = augmentation(image, prepared_target)
+                image_batch.append(image)
+                target_batch.append(prepared_target)
             sample_offset += len(images)
             with torch.set_grad_enabled(grad_enabled):
                 losses = model(image_batch, target_batch)
@@ -628,6 +677,136 @@ def _run_loss_epoch(
     if batches == 0:
         raise DetectionTrainingError("No batches were processed")
     return total_loss / batches
+
+
+class _DetectionOnlineAugmenter:
+    """Apply one validated stochastic transform jointly to an image and its boxes."""
+
+    def __init__(
+        self,
+        config: DetectionAugmentationConfig,
+        *,
+        image_min_size: int | None = None,
+        image_max_size: int | None = None,
+    ) -> None:
+        _validate_augmentation_config(config)
+        transforms: list[Module] = []
+        if (image_min_size is None) != (image_max_size is None):
+            raise DetectionTrainingError(
+                "Augmentation resize requires both image_min_size and image_max_size"
+            )
+        if image_min_size is not None and image_max_size is not None:
+            if image_min_size <= 0 or image_min_size > image_max_size:
+                raise DetectionTrainingError("Augmentation resize dimensions are invalid")
+            transforms.append(
+                v2.Resize(
+                    size=image_min_size,
+                    max_size=image_max_size,
+                    antialias=True,
+                )
+            )
+        if config.horizontal_flip_probability > 0.0:
+            transforms.append(
+                v2.RandomHorizontalFlip(p=config.horizontal_flip_probability)
+            )
+        if config.color_jitter_probability > 0.0:
+            transforms.append(
+                v2.RandomApply(
+                    [
+                        v2.ColorJitter(
+                            brightness=config.brightness,
+                            contrast=config.contrast,
+                            saturation=config.saturation,
+                            hue=config.hue,
+                        )
+                    ],
+                    p=config.color_jitter_probability,
+                )
+            )
+        if config.gaussian_blur_probability > 0.0:
+            transforms.append(
+                v2.RandomApply(
+                    [
+                        v2.GaussianBlur(
+                            kernel_size=config.gaussian_blur_kernel_size,
+                            sigma=(
+                                config.gaussian_blur_sigma_min,
+                                config.gaussian_blur_sigma_max,
+                            ),
+                        )
+                    ],
+                    p=config.gaussian_blur_probability,
+                )
+            )
+        self._transform = v2.Compose(transforms)
+
+    def __call__(
+        self,
+        image: Tensor,
+        target: dict[str, Tensor],
+    ) -> tuple[Tensor, dict[str, Tensor]]:
+        if image.ndim != 3:
+            raise DetectionTrainingError("Augmentation images must have shape [C, H, W]")
+        _, height, width = image.shape
+        boxes = tv_tensors.BoundingBoxes(
+            target["boxes"],
+            format="XYXY",
+            canvas_size=(height, width),
+        )
+        transformed_image, transformed_boxes = self._transform(image, boxes)
+        image_tensor = _clamp_augmented_image_range(
+            transformed_image.as_subclass(Tensor)
+        )
+        box_tensor = transformed_boxes.as_subclass(Tensor).to(dtype=torch.float32)
+        _validate_augmented_sample(
+            image_tensor,
+            box_tensor,
+            expected_box_count=int(target["boxes"].shape[0]),
+        )
+        transformed_target = dict(target)
+        transformed_target["boxes"] = box_tensor
+        transformed_target["area"] = (
+            (box_tensor[:, 2] - box_tensor[:, 0])
+            * (box_tensor[:, 3] - box_tensor[:, 1])
+        ).to(dtype=torch.float32)
+        return image_tensor, transformed_target
+
+
+def _validate_augmented_sample(
+    image: Tensor,
+    boxes: Tensor,
+    *,
+    expected_box_count: int,
+) -> None:
+    if image.ndim != 3 or image.shape[0] != 3:
+        raise DetectionTrainingError("Augmentation must preserve a three-channel image")
+    if torch.any(~torch.isfinite(image)) or torch.any(image < 0.0) or torch.any(image > 1.0):
+        raise DetectionTrainingError("Augmentation produced invalid image values")
+    if boxes.ndim != 2 or boxes.shape != (expected_box_count, 4):
+        raise DetectionTrainingError("Augmentation changed the detection box count or shape")
+    if torch.any(~torch.isfinite(boxes)):
+        raise DetectionTrainingError("Augmentation produced non-finite boxes")
+    _, height, width = image.shape
+    if (
+        torch.any(boxes[:, 0] < 0.0)
+        or torch.any(boxes[:, 1] < 0.0)
+        or torch.any(boxes[:, 2] > width)
+        or torch.any(boxes[:, 3] > height)
+    ):
+        raise DetectionTrainingError("Augmentation produced out-of-bounds boxes")
+    if torch.any(boxes[:, 0] >= boxes[:, 2]) or torch.any(boxes[:, 1] >= boxes[:, 3]):
+        raise DetectionTrainingError("Augmentation produced degenerate boxes")
+
+
+def _clamp_augmented_image_range(image: Tensor) -> Tensor:
+    if torch.any(~torch.isfinite(image)):
+        raise DetectionTrainingError("Augmentation produced non-finite image values")
+    if (
+        torch.any(image < -_AUGMENTED_IMAGE_BOUNDARY_TOLERANCE)
+        or torch.any(image > 1.0 + _AUGMENTED_IMAGE_BOUNDARY_TOLERANCE)
+    ):
+        raise DetectionTrainingError("Augmentation produced invalid image values")
+    return image.clamp(0.0, 1.0)
 
 
 @contextmanager
@@ -672,6 +851,8 @@ def _build_loader(
         dataset_root=config.dataset_root,
         manifest_path=config.manifest_path,
         split=split,
+        variant=config.dataset_variant,
+        excluded_sample_id_suffixes=config.excluded_sample_id_suffixes,
     )
     return DataLoader(
         dataset,
@@ -701,6 +882,42 @@ def _validate_training_inputs(config: DetectionTrainingConfig) -> None:
         raise DetectionTrainingError(f"Output directory is a symlink: {config.output_dir}")
     if config.output_dir.exists() and not config.output_dir.is_dir():
         raise DetectionTrainingError(f"Output path is not a directory: {config.output_dir}")
+    _validate_augmentation_config(config.augmentation)
+
+
+def _validate_augmentation_config(config: DetectionAugmentationConfig) -> None:
+    probabilities = {
+        "horizontal_flip_probability": config.horizontal_flip_probability,
+        "color_jitter_probability": config.color_jitter_probability,
+        "gaussian_blur_probability": config.gaussian_blur_probability,
+    }
+    for name, value in probabilities.items():
+        if not math.isfinite(value) or value < 0.0 or value > 1.0:
+            raise DetectionTrainingError(f"{name} must be between 0 and 1")
+    magnitudes = {
+        "brightness": (config.brightness, 1.0),
+        "contrast": (config.contrast, 1.0),
+        "saturation": (config.saturation, 1.0),
+        "hue": (config.hue, 0.5),
+    }
+    for name, (value, maximum) in magnitudes.items():
+        if not math.isfinite(value) or value < 0.0 or value > maximum:
+            raise DetectionTrainingError(f"{name} must be between 0 and {maximum}")
+    if (
+        isinstance(config.gaussian_blur_kernel_size, bool)
+        or config.gaussian_blur_kernel_size <= 0
+        or config.gaussian_blur_kernel_size % 2 == 0
+    ):
+        raise DetectionTrainingError("gaussian_blur_kernel_size must be a positive odd integer")
+    if (
+        not math.isfinite(config.gaussian_blur_sigma_min)
+        or not math.isfinite(config.gaussian_blur_sigma_max)
+        or config.gaussian_blur_sigma_min <= 0.0
+        or config.gaussian_blur_sigma_min > config.gaussian_blur_sigma_max
+    ):
+        raise DetectionTrainingError(
+            "Gaussian blur sigma bounds must be positive and ordered"
+        )
 
 
 def _prepare_output_dir(output_dir: Path) -> None:
@@ -727,6 +944,13 @@ def _table(payload: dict[str, object], name: str) -> dict[str, object]:
     return value
 
 
+def _optional_table(payload: dict[str, object], name: str) -> dict[str, object]:
+    value = payload.get(name, {})
+    if not isinstance(value, dict):
+        raise DetectionTrainingError(f"[{name}] must be a table")
+    return value
+
+
 def _path_value(payload: dict[str, object], key: str) -> Path:
     value = payload.get(key)
     if not isinstance(value, str) or not value.strip():
@@ -745,6 +969,29 @@ def _optional_path_value(payload: dict[str, object], key: str) -> Path | None:
     if "\x00" in value:
         raise DetectionTrainingError(f"{key} contains a null byte")
     return Path(value)
+
+
+def _optional_text(payload: dict[str, object], key: str) -> str | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip() or "\x00" in value:
+        raise DetectionTrainingError(f"{key} must be a non-empty safe string")
+    return value.strip()
+
+
+def _optional_text_list(payload: dict[str, object], key: str) -> tuple[str, ...]:
+    value = payload.get(key, [])
+    if not isinstance(value, list):
+        raise DetectionTrainingError(f"{key} must be a list of strings")
+    normalized: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip() or "\x00" in item:
+            raise DetectionTrainingError(f"{key} must contain non-empty safe strings")
+        normalized.append(item.strip())
+    if len(normalized) != len(set(normalized)):
+        raise DetectionTrainingError(f"{key} must not contain duplicates")
+    return tuple(normalized)
 
 
 def _positive_int(payload: dict[str, object], key: str) -> int:
@@ -834,10 +1081,97 @@ def _device_name(payload: dict[str, object], key: str) -> DeviceName:
     raise DetectionTrainingError(f"{key} must be 'auto', 'cpu', or 'cuda'")
 
 
+def _augmentation_config(payload: dict[str, object]) -> DetectionAugmentationConfig:
+    if not payload:
+        return DetectionAugmentationConfig()
+    enabled = payload.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise DetectionTrainingError("augmentation enabled must be a boolean")
+    config = DetectionAugmentationConfig(
+        enabled=enabled,
+        horizontal_flip_probability=_bounded_float_with_default(
+            payload, "horizontal_flip_probability", default=0.0, minimum=0.0, maximum=1.0
+        ),
+        color_jitter_probability=_bounded_float_with_default(
+            payload, "color_jitter_probability", default=0.0, minimum=0.0, maximum=1.0
+        ),
+        brightness=_bounded_float_with_default(
+            payload, "brightness", default=0.0, minimum=0.0, maximum=1.0
+        ),
+        contrast=_bounded_float_with_default(
+            payload, "contrast", default=0.0, minimum=0.0, maximum=1.0
+        ),
+        saturation=_bounded_float_with_default(
+            payload, "saturation", default=0.0, minimum=0.0, maximum=1.0
+        ),
+        hue=_bounded_float_with_default(
+            payload, "hue", default=0.0, minimum=0.0, maximum=0.5
+        ),
+        gaussian_blur_probability=_bounded_float_with_default(
+            payload, "gaussian_blur_probability", default=0.0, minimum=0.0, maximum=1.0
+        ),
+        gaussian_blur_kernel_size=_positive_int_with_default(
+            payload, "gaussian_blur_kernel_size", default=3
+        ),
+        gaussian_blur_sigma_min=_positive_float_with_default(
+            payload, "gaussian_blur_sigma_min", default=0.1
+        ),
+        gaussian_blur_sigma_max=_positive_float_with_default(
+            payload, "gaussian_blur_sigma_max", default=1.0
+        ),
+    )
+    _validate_augmentation_config(config)
+    return config
+
+
+def _bounded_float_with_default(
+    payload: dict[str, object],
+    key: str,
+    *,
+    default: float,
+    minimum: float,
+    maximum: float,
+) -> float:
+    if key not in payload:
+        return default
+    return _bounded_float(payload, key, minimum=minimum, maximum=maximum)
+
+
+def _positive_int_with_default(
+    payload: dict[str, object], key: str, *, default: int
+) -> int:
+    if key not in payload:
+        return default
+    return _positive_int(payload, key)
+
+
+def _positive_float_with_default(
+    payload: dict[str, object], key: str, *, default: float
+) -> float:
+    if key not in payload:
+        return default
+    return _positive_float(payload, key)
+
+
 def _config_for_json(config: DetectionTrainingConfig) -> dict[str, Any]:
     return {
+        "augmentation": {
+            "brightness": config.augmentation.brightness,
+            "color_jitter_probability": config.augmentation.color_jitter_probability,
+            "contrast": config.augmentation.contrast,
+            "enabled": config.augmentation.enabled,
+            "gaussian_blur_kernel_size": config.augmentation.gaussian_blur_kernel_size,
+            "gaussian_blur_probability": config.augmentation.gaussian_blur_probability,
+            "gaussian_blur_sigma_max": config.augmentation.gaussian_blur_sigma_max,
+            "gaussian_blur_sigma_min": config.augmentation.gaussian_blur_sigma_min,
+            "horizontal_flip_probability": config.augmentation.horizontal_flip_probability,
+            "hue": config.augmentation.hue,
+            "saturation": config.augmentation.saturation,
+        },
         "batch_size": config.batch_size,
         "dataset_root": str(config.dataset_root),
+        "dataset_variant": config.dataset_variant,
+        "excluded_sample_id_suffixes": list(config.excluded_sample_id_suffixes),
         "device": config.device,
         "epochs": config.epochs,
         "image_max_size": config.image_max_size,
