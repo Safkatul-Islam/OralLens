@@ -38,6 +38,46 @@ def main(argv: Sequence[str] | None = None) -> int:
             config = load_detection_evaluation_config(args.config)
             result = run_detection_evaluation(config)
             payload = {
+                "average_precision": (
+                    {
+                        "ap50": result.average_precision.ap50,
+                        "map50_95": result.average_precision.map50_95,
+                    }
+                    if result.average_precision is not None
+                    else None
+                ),
+                "dataset": {
+                    "image_count": result.dataset_summary.image_count,
+                    "patient_count": result.dataset_summary.patient_count,
+                    "target_count": result.dataset_summary.target_count,
+                    "variant": result.dataset_summary.variant,
+                    "excluded_sample_id_suffixes": list(
+                        result.dataset_summary.excluded_sample_id_suffixes
+                    ),
+                },
+                "error_analysis": (
+                    {
+                        "background_false_positives": (
+                            result.error_analysis.background_false_positives
+                        ),
+                        "duplicate_detections": (
+                            result.error_analysis.duplicate_detections
+                        ),
+                        "false_negatives": result.error_analysis.false_negatives,
+                        "false_positives": result.error_analysis.false_positives,
+                        "localization_failures": (
+                            result.error_analysis.localization_failures
+                        ),
+                        "low_confidence_matches": (
+                            result.error_analysis.low_confidence_matches
+                        ),
+                        "unexplained_false_negatives": (
+                            result.error_analysis.unexplained_false_negatives
+                        ),
+                    }
+                    if result.error_analysis is not None
+                    else None
+                ),
                 "metrics": [
                     {
                         "f1": metric.f1,
