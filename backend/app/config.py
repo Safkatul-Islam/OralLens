@@ -22,7 +22,7 @@ def default_ml_detection_config_path() -> Path:
         default_project_root()
         / "ml"
         / "configs"
-        / "orthodontic_plaque_detection_mvp_v3_predict.toml"
+        / "orthodontic_plaque_detection_mvp_v4_originals_online_aug_predict.toml"
     )
 
 
