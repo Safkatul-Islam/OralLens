@@ -1,0 +1,24 @@
+[model]
+model_name = "orthodontic-plaque-mvp-v4-originals-online-aug-epoch9"
+checkpoint_path = "ml/runs/detection/orthodontic_plaque_part2_mvp_v4_originals_online_aug/checkpoint_best.pt"
+num_classes = 2
+image_min_size = 512
+image_max_size = 768
+trainable_backbone_layers = 3
+pretrained_weights = "none"
+
+[inference]
+device = "auto"
+score_threshold = 0.80
+max_detections = 100
+
+[input_policy]
+enabled = true
+min_short_side = 256
+max_pixels = 30000000
+min_mean_luminance = 0.05
+max_mean_luminance = 0.98
+min_luminance_stddev = 0.02
+
+[output]
+output_dir = "ml/runs/detection/orthodontic_plaque_part2_mvp_v4_originals_online_aug_predictions"
