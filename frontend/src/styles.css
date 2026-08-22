@@ -227,6 +227,32 @@ button:focus-visible {
   justify-content: space-between;
 }
 
+.abstention-heading {
+  align-items: start;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+}
+
+.status-chip {
+  background: #fff1d6;
+  border: 1px solid #d19b2a;
+  color: #674609;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 8px 10px;
+}
+
+.abstention-alert {
+  margin: 18px 0 0;
+}
+
+.assessment-reasons {
+  color: #364440;
+  margin: 0;
+  padding-left: 18px;
+}
+
 .score {
   align-items: center;
   background: #f6c65b;
@@ -317,7 +343,8 @@ button:focus-visible {
   }
 
   .topbar,
-  .result-heading {
+  .result-heading,
+  .abstention-heading {
     align-items: stretch;
     flex-direction: column;
   }
