@@ -56,6 +56,11 @@ class DetectionEvaluationConfig:
     device: DeviceName
     iou_thresholds: tuple[float, ...]
     score_thresholds: tuple[float, ...]
+    variant: str | None = None
+    excluded_sample_id_suffixes: tuple[str, ...] = ()
+    average_precision_iou_thresholds: tuple[float, ...] = ()
+    analysis_score_threshold: float | None = None
+    analysis_top_cases: int = 10
     max_batches: int | None = None
 
 
@@ -115,6 +120,45 @@ class DetectionEvaluationResult:
 
     metrics_path: Path
     metrics: tuple[DetectionMetric, ...]
+    dataset_summary: DetectionDatasetSummary
+    average_precision: DetectionAveragePrecision | None
+    error_analysis: DetectionErrorAnalysis | None
+
+
+@dataclass(frozen=True, slots=True)
+class DetectionDatasetSummary:
+    """Population identity for one completed detection evaluation."""
+
+    image_count: int
+    patient_count: int
+    target_count: int
+    variant: str | None
+    excluded_sample_id_suffixes: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DetectionAveragePrecision:
+    """Single-class 101-point interpolated average precision."""
+
+    ap50: float | None
+    map50_95: float | None
+    by_iou: tuple[tuple[float, float], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DetectionErrorAnalysis:
+    """Aggregate and representative failures at one frozen operating point."""
+
+    iou_threshold: float
+    score_threshold: float
+    false_positives: int
+    false_negatives: int
+    duplicate_detections: int
+    localization_failures: int
+    background_false_positives: int
+    low_confidence_matches: int
+    unexplained_false_negatives: int
+    top_failure_cases: tuple[dict[str, Any], ...]
 
 
 @dataclass(slots=True)
@@ -171,6 +215,24 @@ def load_detection_evaluation_config(config_path: Path) -> DetectionEvaluationCo
         device=_device_name(evaluation, "device"),
         iou_thresholds=_thresholds(evaluation, "iou_thresholds"),
         score_thresholds=_thresholds(evaluation, "score_thresholds"),
+        variant=_optional_text(evaluation, "variant"),
+        excluded_sample_id_suffixes=_optional_text_list(
+            evaluation,
+            "excluded_sample_id_suffixes",
+        ),
+        average_precision_iou_thresholds=_optional_thresholds(
+            evaluation,
+            "average_precision_iou_thresholds",
+        ),
+        analysis_score_threshold=_optional_threshold(
+            evaluation,
+            "analysis_score_threshold",
+        ),
+        analysis_top_cases=_optional_positive_int_with_default(
+            evaluation,
+            "analysis_top_cases",
+            default=10,
+        ),
         max_batches=_optional_positive_int(evaluation, "max_batches"),
     )
 
@@ -251,6 +313,201 @@ def evaluate_detection_image(
     )
 
 
+def evaluate_detection_average_precision(
+    predictions: list[dict[str, Tensor]],
+    targets: list[dict[str, Tensor]],
+    *,
+    iou_thresholds: tuple[float, ...],
+    num_classes: int,
+) -> DetectionAveragePrecision:
+    """Calculate single-class 101-point interpolated AP across images."""
+
+    if len(predictions) != len(targets):
+        raise DetectionEvaluationError("Prediction and target batch sizes differ")
+    if not predictions:
+        raise DetectionEvaluationError("Average precision requires at least one image")
+    if num_classes != 2:
+        raise DetectionEvaluationError(
+            "Average precision currently supports the binary plaque detector"
+        )
+    if not iou_thresholds:
+        raise DetectionEvaluationError("Average precision requires IoU thresholds")
+
+    validated_predictions = [
+        _validate_prediction(prediction, num_classes=num_classes)
+        for prediction in predictions
+    ]
+    validated_targets = [
+        _validate_target(target, num_classes=num_classes) for target in targets
+    ]
+    target_count = sum(int(target["boxes"].shape[0]) for target in validated_targets)
+    if target_count == 0:
+        raise DetectionEvaluationError(
+            "Average precision requires at least one ground-truth object"
+        )
+
+    by_iou = tuple(
+        (
+            iou_threshold,
+            _average_precision_at_iou(
+                validated_predictions,
+                validated_targets,
+                iou_threshold=iou_threshold,
+                target_count=target_count,
+            ),
+        )
+        for iou_threshold in iou_thresholds
+    )
+    ap50_values = [value for threshold, value in by_iou if threshold == 0.5]
+    complete_coco_range = all(
+        any(abs(threshold - expected) < 1e-9 for threshold, _ in by_iou)
+        for expected in (0.5 + 0.05 * index for index in range(10))
+    )
+    return DetectionAveragePrecision(
+        ap50=ap50_values[0] if ap50_values else None,
+        map50_95=(
+            sum(value for _, value in by_iou) / len(by_iou)
+            if complete_coco_range
+            else None
+        ),
+        by_iou=by_iou,
+    )
+
+
+def analyze_detection_errors(
+    predictions: list[dict[str, Tensor]],
+    targets: list[dict[str, Tensor]],
+    source_targets: list[OrthodonticPlaqueTarget],
+    *,
+    iou_threshold: float,
+    score_threshold: float,
+    num_classes: int,
+    top_cases: int,
+) -> DetectionErrorAnalysis:
+    """Quantify threshold, localization, duplicate, and background failures."""
+
+    if not (len(predictions) == len(targets) == len(source_targets)):
+        raise DetectionEvaluationError("Error-analysis batch sizes differ")
+    if not 0.0 < iou_threshold < 1.0:
+        raise DetectionEvaluationError("Analysis IoU threshold must be between 0 and 1")
+    if not 0.0 < score_threshold < 1.0:
+        raise DetectionEvaluationError(
+            "Analysis score threshold must be between 0 and 1"
+        )
+    if top_cases <= 0:
+        raise DetectionEvaluationError("Analysis top_cases must be positive")
+
+    totals = {
+        "false_positives": 0,
+        "false_negatives": 0,
+        "duplicate_detections": 0,
+        "localization_failures": 0,
+        "background_false_positives": 0,
+        "low_confidence_matches": 0,
+    }
+    cases: list[dict[str, Any]] = []
+    for prediction, target, source_target in zip(
+        predictions,
+        targets,
+        source_targets,
+    ):
+        validated_prediction = _validate_prediction(
+            prediction,
+            num_classes=num_classes,
+        )
+        validated_target = _validate_target(target, num_classes=num_classes)
+        image_result = _match_single_image(
+            validated_prediction,
+            validated_target,
+            iou_threshold=iou_threshold,
+            score_threshold=score_threshold,
+        )
+        false_positive_records: list[dict[str, Any]] = []
+        duplicate_count = 0
+        localization_count = 0
+        background_count = 0
+        for match in image_result.prediction_matches:
+            if match.is_true_positive:
+                continue
+            if match.best_iou is not None and match.best_iou >= iou_threshold:
+                kind = "duplicate"
+                duplicate_count += 1
+            elif match.best_iou is not None and match.best_iou >= 0.1:
+                kind = "localization"
+                localization_count += 1
+            else:
+                kind = "background"
+                background_count += 1
+            false_positive_records.append(
+                {
+                    "best_iou": match.best_iou,
+                    "box_xyxy": list(match.box_xyxy),
+                    "kind": kind,
+                    "score": match.score,
+                }
+            )
+
+        low_confidence_records = _low_confidence_target_matches(
+            validated_prediction,
+            validated_target,
+            unmatched_target_indexes=image_result.unmatched_target_indexes,
+            iou_threshold=iou_threshold,
+            score_threshold=score_threshold,
+        )
+        false_negatives = image_result.false_negatives
+        totals["false_positives"] += image_result.false_positives
+        totals["false_negatives"] += false_negatives
+        totals["duplicate_detections"] += duplicate_count
+        totals["localization_failures"] += localization_count
+        totals["background_false_positives"] += background_count
+        totals["low_confidence_matches"] += len(low_confidence_records)
+
+        if image_result.false_positives or false_negatives:
+            cases.append(
+                {
+                    "sample_id": source_target.sample_id,
+                    "patient_id": source_target.patient_id,
+                    "image_relative_path": source_target.image_relative_path.as_posix(),
+                    "false_positives": image_result.false_positives,
+                    "false_negatives": false_negatives,
+                    "duplicate_detections": duplicate_count,
+                    "localization_failures": localization_count,
+                    "background_false_positives": background_count,
+                    "low_confidence_matches": len(low_confidence_records),
+                    "false_positive_predictions": false_positive_records[:25],
+                    "low_confidence_predictions": low_confidence_records[:25],
+                    "unmatched_target_boxes_xyxy": [
+                        validated_target["boxes"][target_index].tolist()
+                        for target_index in image_result.unmatched_target_indexes[:25]
+                    ],
+                }
+            )
+
+    cases.sort(
+        key=lambda case: (
+            -int(case["false_positives"]) - int(case["false_negatives"]),
+            -int(case["localization_failures"]),
+            str(case["sample_id"]),
+        )
+    )
+    unexplained_false_negatives = max(
+        0,
+        totals["false_negatives"] - totals["low_confidence_matches"],
+    )
+    return DetectionErrorAnalysis(
+        iou_threshold=iou_threshold,
+        score_threshold=score_threshold,
+        false_positives=totals["false_positives"],
+        false_negatives=totals["false_negatives"],
+        duplicate_detections=totals["duplicate_detections"],
+        localization_failures=totals["localization_failures"],
+        background_false_positives=totals["background_false_positives"],
+        low_confidence_matches=totals["low_confidence_matches"],
+        unexplained_false_negatives=unexplained_false_negatives,
+        top_failure_cases=tuple(cases[:top_cases]),
+    )
+
+
 def run_detection_evaluation(
     config: DetectionEvaluationConfig,
     *,
@@ -271,6 +528,9 @@ def run_detection_evaluation(
         for iou_threshold in config.iou_thresholds
         for score_threshold in config.score_thresholds
     }
+    all_predictions: list[dict[str, Tensor]] = []
+    all_targets: list[dict[str, Tensor]] = []
+    all_source_targets: list[OrthodonticPlaqueTarget] = []
     with torch.no_grad():
         for batch_index, (images, raw_targets) in enumerate(loader):
             if config.max_batches is not None and batch_index >= config.max_batches:
@@ -296,9 +556,20 @@ def run_detection_evaluation(
             predictions = model(image_batch)
             if not isinstance(predictions, list):
                 raise DetectionEvaluationError("Model did not return a prediction list")
+            validated_predictions = [
+                _validate_prediction(prediction, num_classes=config.num_classes)
+                for prediction in predictions
+            ]
+            validated_targets = [
+                _validate_target(target, num_classes=config.num_classes)
+                for target in target_batch
+            ]
+            all_predictions.extend(validated_predictions)
+            all_targets.extend(validated_targets)
+            all_source_targets.extend(raw_targets)
             batch_metrics = evaluate_detection_predictions(
-                predictions,
-                target_batch,
+                validated_predictions,
+                validated_targets,
                 iou_thresholds=config.iou_thresholds,
                 score_thresholds=config.score_thresholds,
                 num_classes=config.num_classes,
@@ -330,10 +601,44 @@ def run_detection_evaluation(
     if not metrics:
         raise DetectionEvaluationError("No evaluation metrics were produced")
 
+    dataset_summary = DetectionDatasetSummary(
+        image_count=len(all_source_targets),
+        patient_count=len({target.patient_id for target in all_source_targets}),
+        target_count=sum(int(target["boxes"].shape[0]) for target in all_targets),
+        variant=config.variant,
+        excluded_sample_id_suffixes=config.excluded_sample_id_suffixes,
+    )
+    average_precision = (
+        evaluate_detection_average_precision(
+            all_predictions,
+            all_targets,
+            iou_thresholds=config.average_precision_iou_thresholds,
+            num_classes=config.num_classes,
+        )
+        if config.average_precision_iou_thresholds
+        else None
+    )
+    error_analysis = (
+        analyze_detection_errors(
+            all_predictions,
+            all_targets,
+            all_source_targets,
+            iou_threshold=0.5,
+            score_threshold=config.analysis_score_threshold,
+            num_classes=config.num_classes,
+            top_cases=config.analysis_top_cases,
+        )
+        if config.analysis_score_threshold is not None
+        else None
+    )
+
     metrics_path = _safe_output_file(config.output_dir, "evaluation_metrics.json")
     metrics_path.write_text(
         json.dumps(
             {
+                "average_precision": _average_precision_for_json(average_precision),
+                "dataset": _dataset_summary_for_json(dataset_summary),
+                "error_analysis": _error_analysis_for_json(error_analysis),
                 "metrics": [_metric_for_json(metric) for metric in metrics],
                 "split": config.split,
             },
@@ -342,7 +647,13 @@ def run_detection_evaluation(
         ),
         encoding="utf-8",
     )
-    return DetectionEvaluationResult(metrics_path=metrics_path, metrics=metrics)
+    return DetectionEvaluationResult(
+        metrics_path=metrics_path,
+        metrics=metrics,
+        dataset_summary=dataset_summary,
+        average_precision=average_precision,
+        error_analysis=error_analysis,
+    )
 
 
 def _build_model(
@@ -479,6 +790,141 @@ def _match_single_image(
     )
 
 
+def _average_precision_at_iou(
+    predictions: list[dict[str, Tensor]],
+    targets: list[dict[str, Tensor]],
+    *,
+    iou_threshold: float,
+    target_count: int,
+) -> float:
+    ranked_predictions = sorted(
+        (
+            (float(score), image_index, prediction_index)
+            for image_index, prediction in enumerate(predictions)
+            for prediction_index, score in enumerate(prediction["scores"])
+        ),
+        key=lambda item: (-item[0], item[1], item[2]),
+    )
+    if not ranked_predictions:
+        return 0.0
+
+    matched_targets: dict[int, set[int]] = {
+        image_index: set() for image_index in range(len(targets))
+    }
+    true_positive_flags: list[int] = []
+    false_positive_flags: list[int] = []
+    for _, image_index, prediction_index in ranked_predictions:
+        prediction = predictions[image_index]
+        target = targets[image_index]
+        prediction_label = int(prediction["labels"][prediction_index])
+        available_indexes = [
+            target_index
+            for target_index, target_label in enumerate(target["labels"])
+            if int(target_label) == prediction_label
+            and target_index not in matched_targets[image_index]
+        ]
+        matched_target_index: int | None = None
+        if available_indexes:
+            candidate_ious = box_iou(
+                prediction["boxes"][prediction_index].unsqueeze(0),
+                target["boxes"][available_indexes],
+            ).squeeze(0)
+            best_position = int(torch.argmax(candidate_ious))
+            if float(candidate_ious[best_position]) >= iou_threshold:
+                matched_target_index = available_indexes[best_position]
+        if matched_target_index is None:
+            true_positive_flags.append(0)
+            false_positive_flags.append(1)
+        else:
+            matched_targets[image_index].add(matched_target_index)
+            true_positive_flags.append(1)
+            false_positive_flags.append(0)
+
+    cumulative_true_positives: list[int] = []
+    cumulative_false_positives: list[int] = []
+    running_true_positives = 0
+    running_false_positives = 0
+    for true_positive, false_positive in zip(
+        true_positive_flags,
+        false_positive_flags,
+    ):
+        running_true_positives += true_positive
+        running_false_positives += false_positive
+        cumulative_true_positives.append(running_true_positives)
+        cumulative_false_positives.append(running_false_positives)
+
+    recalls = [value / target_count for value in cumulative_true_positives]
+    precisions = [
+        _safe_divide(true_positives, true_positives + false_positives)
+        for true_positives, false_positives in zip(
+            cumulative_true_positives,
+            cumulative_false_positives,
+        )
+    ]
+    interpolated_precisions = [
+        max(
+            (
+                precision
+                for recall, precision in zip(recalls, precisions)
+                if recall >= recall_threshold
+            ),
+            default=0.0,
+        )
+        for recall_threshold in (index / 100.0 for index in range(101))
+    ]
+    return sum(interpolated_precisions) / len(interpolated_precisions)
+
+
+def _low_confidence_target_matches(
+    prediction: dict[str, Tensor],
+    target: dict[str, Tensor],
+    *,
+    unmatched_target_indexes: tuple[int, ...],
+    iou_threshold: float,
+    score_threshold: float,
+) -> list[dict[str, Any]]:
+    available_targets = set(unmatched_target_indexes)
+    low_confidence_indexes = sorted(
+        (
+            prediction_index
+            for prediction_index, score in enumerate(prediction["scores"])
+            if float(score) < score_threshold
+        ),
+        key=lambda prediction_index: float(prediction["scores"][prediction_index]),
+        reverse=True,
+    )
+    matches: list[dict[str, Any]] = []
+    for prediction_index in low_confidence_indexes:
+        prediction_label = int(prediction["labels"][prediction_index])
+        same_label_targets = [
+            target_index
+            for target_index in sorted(available_targets)
+            if int(target["labels"][target_index]) == prediction_label
+        ]
+        if not same_label_targets:
+            continue
+        candidate_ious = box_iou(
+            prediction["boxes"][prediction_index].unsqueeze(0),
+            target["boxes"][same_label_targets],
+        ).squeeze(0)
+        best_position = int(torch.argmax(candidate_ious))
+        best_iou = float(candidate_ious[best_position])
+        if best_iou < iou_threshold:
+            continue
+        target_index = same_label_targets[best_position]
+        available_targets.remove(target_index)
+        matches.append(
+            {
+                "prediction_index": prediction_index,
+                "target_index": target_index,
+                "score": float(prediction["scores"][prediction_index]),
+                "iou": best_iou,
+                "box_xyxy": prediction["boxes"][prediction_index].tolist(),
+            }
+        )
+    return matches
+
+
 def _metric_from_accumulator(
     *,
     iou_threshold: float,
@@ -577,6 +1023,8 @@ def _build_loader(config: DetectionEvaluationConfig) -> DataLoader:
         dataset_root=config.dataset_root,
         manifest_path=config.manifest_path,
         split=config.split,
+        variant=config.variant,
+        excluded_sample_id_suffixes=config.excluded_sample_id_suffixes,
     )
     return DataLoader(
         dataset,
@@ -594,6 +1042,22 @@ def _validate_evaluation_inputs(config: DetectionEvaluationConfig) -> None:
         )
     if config.image_min_size > config.image_max_size:
         raise DetectionEvaluationError("image_min_size must be <= image_max_size")
+    for threshold in config.average_precision_iou_thresholds:
+        if not 0.0 < threshold < 1.0:
+            raise DetectionEvaluationError(
+                "Average-precision IoU thresholds must be between 0 and 1"
+            )
+    if config.analysis_score_threshold is not None:
+        if 0.5 not in config.iou_thresholds:
+            raise DetectionEvaluationError(
+                "Error analysis requires IoU threshold 0.5"
+            )
+        if config.analysis_score_threshold not in config.score_thresholds:
+            raise DetectionEvaluationError(
+                "Analysis score threshold must be included in score_thresholds"
+            )
+    if config.analysis_top_cases <= 0:
+        raise DetectionEvaluationError("analysis_top_cases must be positive")
     if config.checkpoint_path.is_symlink() or not config.checkpoint_path.is_file():
         raise DetectionEvaluationError(
             f"Checkpoint is not a regular file: {config.checkpoint_path}"
@@ -663,6 +1127,20 @@ def _optional_positive_int(payload: dict[str, object], key: str) -> int | None:
     return value
 
 
+def _optional_positive_int_with_default(
+    payload: dict[str, object],
+    key: str,
+    *,
+    default: int,
+) -> int:
+    value = payload.get(key)
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise DetectionEvaluationError(f"{key} must be a positive integer")
+    return value
+
+
 def _non_negative_int(payload: dict[str, object], key: str) -> int:
     value = payload.get(key)
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
@@ -701,6 +1179,51 @@ def _thresholds(payload: dict[str, object], key: str) -> tuple[float, ...]:
             raise DetectionEvaluationError(f"{key} values must be between 0 and 1")
         thresholds.append(parsed)
     return tuple(thresholds)
+
+
+def _optional_thresholds(
+    payload: dict[str, object],
+    key: str,
+) -> tuple[float, ...]:
+    if payload.get(key) is None:
+        return ()
+    return _thresholds(payload, key)
+
+
+def _optional_threshold(payload: dict[str, object], key: str) -> float | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise DetectionEvaluationError(f"{key} must be numeric when provided")
+    parsed = float(value)
+    if not 0.0 < parsed < 1.0:
+        raise DetectionEvaluationError(f"{key} must be between 0 and 1")
+    return parsed
+
+
+def _optional_text(payload: dict[str, object], key: str) -> str | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip() or "\x00" in value:
+        raise DetectionEvaluationError(f"{key} must be a non-empty safe string")
+    return value.strip()
+
+
+def _optional_text_list(payload: dict[str, object], key: str) -> tuple[str, ...]:
+    value = payload.get(key)
+    if value is None:
+        return ()
+    if not isinstance(value, list) or any(
+        not isinstance(item, str) or not item.strip() or "\x00" in item
+        for item in value
+    ):
+        raise DetectionEvaluationError(f"{key} must be a list of safe strings")
+    normalized = tuple(item.strip() for item in value)
+    if len(normalized) != len(set(normalized)):
+        raise DetectionEvaluationError(f"{key} must not contain duplicates")
+    return normalized
 
 
 def _weights_name(
@@ -744,4 +1267,49 @@ def _metric_for_json(metric: DetectionMetric) -> dict[str, float | int | None]:
         "score_threshold": metric.score_threshold,
         "target_count": metric.target_count,
         "true_positives": metric.true_positives,
+    }
+
+
+def _dataset_summary_for_json(summary: DetectionDatasetSummary) -> dict[str, object]:
+    return {
+        "image_count": summary.image_count,
+        "patient_count": summary.patient_count,
+        "target_count": summary.target_count,
+        "variant": summary.variant,
+        "excluded_sample_id_suffixes": list(summary.excluded_sample_id_suffixes),
+    }
+
+
+def _average_precision_for_json(
+    summary: DetectionAveragePrecision | None,
+) -> dict[str, object] | None:
+    if summary is None:
+        return None
+    return {
+        "ap50": summary.ap50,
+        "map50_95": summary.map50_95,
+        "method": "single_class_101_point_interpolated",
+        "by_iou": [
+            {"iou_threshold": threshold, "average_precision": value}
+            for threshold, value in summary.by_iou
+        ],
+    }
+
+
+def _error_analysis_for_json(
+    analysis: DetectionErrorAnalysis | None,
+) -> dict[str, object] | None:
+    if analysis is None:
+        return None
+    return {
+        "iou_threshold": analysis.iou_threshold,
+        "score_threshold": analysis.score_threshold,
+        "false_positives": analysis.false_positives,
+        "false_negatives": analysis.false_negatives,
+        "duplicate_detections": analysis.duplicate_detections,
+        "localization_failures": analysis.localization_failures,
+        "background_false_positives": analysis.background_false_positives,
+        "low_confidence_matches": analysis.low_confidence_matches,
+        "unexplained_false_negatives": analysis.unexplained_false_negatives,
+        "top_failure_cases": list(analysis.top_failure_cases),
     }
