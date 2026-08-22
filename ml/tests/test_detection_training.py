@@ -15,6 +15,7 @@ from torchvision.ops import MultiScaleRoIAlign
 import orallens_ml.training.detection as detection_training
 from orallens_ml.modeling.detection import DetectionModelError
 from orallens_ml.training.detection import (
+    DetectionAugmentationConfig,
     DetectionTrainingConfig,
     DetectionTrainingError,
     collate_detection_batch,
@@ -32,6 +33,7 @@ FIELDNAMES = (
     "source_csv_line",
     "annotation_count",
     "annotations_json",
+    "variant",
 )
 
 
@@ -93,15 +95,36 @@ def write_manifest_dataset(root: Path) -> tuple[Path, Path]:
     dataset_root = root / "dataset"
     manifest_path = root / "manifest.csv"
     rows = [
-        ("train-sample", "patient0001", "train", "data/images/patient0001/train.jpg"),
+        (
+            "train-sample",
+            "patient0001",
+            "train",
+            "data/images/patient0001/train.jpg",
+            "original",
+        ),
+        (
+            "train-sample_rotate-left-15",
+            "patient0001",
+            "train",
+            "data/images/patient0001/train_rotate-left-15.jpg",
+            "rotate-left-15",
+        ),
+        (
+            "train-sample_dark",
+            "patient0001",
+            "train",
+            "data/images/patient0001/train_dark.jpg",
+            "original",
+        ),
         (
             "validation-sample",
             "patient0002",
             "validation",
             "data/images/patient0002/validation.jpg",
+            "original",
         ),
     ]
-    for index, (_, _, _, relative_path) in enumerate(rows):
+    for index, (_, _, _, relative_path, _) in enumerate(rows):
         image_path = dataset_root.joinpath(*relative_path.split("/"))
         image_path.parent.mkdir(parents=True, exist_ok=True)
         Image.new("RGB", (8, 6), color=(20 + index, 40, 60)).save(image_path)
@@ -118,7 +141,7 @@ def write_manifest_dataset(root: Path) -> tuple[Path, Path]:
     with manifest_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=FIELDNAMES)
         writer.writeheader()
-        for line_number, (sample_id, patient_id, split, relative_path) in enumerate(
+        for line_number, (sample_id, patient_id, split, relative_path, variant) in enumerate(
             rows,
             start=2,
         ):
@@ -131,6 +154,7 @@ def write_manifest_dataset(root: Path) -> tuple[Path, Path]:
                     "source_csv_line": str(line_number),
                     "annotation_count": "1",
                     "annotations_json": json.dumps([annotation]),
+                    "variant": variant,
                 }
             )
     return dataset_root, manifest_path
@@ -143,6 +167,8 @@ def test_load_detection_training_config_validates_values(tmp_path: Path) -> None
 [data]
 dataset_root = "dataset"
 manifest_path = "manifest.csv"
+variant = "original"
+excluded_sample_id_suffixes = ["_blur", "_dark", "_light"]
 
 [model]
 num_classes = 2
@@ -162,6 +188,19 @@ device = "cpu"
 seed = 1
 max_train_batches = 1
 
+[augmentation]
+enabled = true
+horizontal_flip_probability = 0.5
+color_jitter_probability = 0.8
+brightness = 0.12
+contrast = 0.12
+saturation = 0.08
+hue = 0.02
+gaussian_blur_probability = 0.1
+gaussian_blur_kernel_size = 3
+gaussian_blur_sigma_min = 0.1
+gaussian_blur_sigma_max = 1.0
+
 [output]
 output_dir = "runs/test"
 """.strip(),
@@ -174,6 +213,120 @@ output_dir = "runs/test"
     assert config.pretrained_weights == "none"
     assert config.max_train_batches == 1
     assert config.resume_checkpoint_path is None
+    assert config.dataset_variant == "original"
+    assert config.excluded_sample_id_suffixes == ("_blur", "_dark", "_light")
+    assert config.augmentation.enabled is True
+    assert config.augmentation.horizontal_flip_probability == 0.5
+    assert config.augmentation.gaussian_blur_kernel_size == 3
+
+
+def test_online_augmentation_flips_boxes_and_preserves_validity() -> None:
+    image = torch.zeros((3, 6, 8), dtype=torch.float32)
+    image[:, 1:5, 1:3] = 0.5
+    target = {
+        "boxes": torch.tensor([[1.0, 1.0, 3.0, 5.0]], dtype=torch.float32),
+        "labels": torch.ones((1,), dtype=torch.int64),
+        "image_id": torch.tensor([0], dtype=torch.int64),
+        "area": torch.tensor([8.0], dtype=torch.float32),
+        "iscrowd": torch.zeros((1,), dtype=torch.int64),
+    }
+    augmenter = detection_training._DetectionOnlineAugmenter(
+        DetectionAugmentationConfig(enabled=True, horizontal_flip_probability=1.0)
+    )
+
+    transformed_image, transformed_target = augmenter(image, target)
+
+    assert torch.equal(transformed_image, torch.flip(image, dims=(-1,)))
+    assert torch.equal(
+        transformed_target["boxes"],
+        torch.tensor([[5.0, 1.0, 7.0, 5.0]], dtype=torch.float32),
+    )
+    assert torch.equal(transformed_target["area"], target["area"])
+
+
+def test_online_augmentation_rejects_invalid_configuration() -> None:
+    with pytest.raises(DetectionTrainingError, match="positive odd"):
+        detection_training._DetectionOnlineAugmenter(
+            DetectionAugmentationConfig(
+                enabled=True,
+                gaussian_blur_probability=0.1,
+                gaussian_blur_kernel_size=4,
+            )
+        )
+
+
+def test_online_augmentation_resizes_image_and_boxes_together() -> None:
+    image = torch.zeros((3, 12, 16), dtype=torch.float32)
+    target = {
+        "boxes": torch.tensor([[2.0, 2.0, 6.0, 10.0]], dtype=torch.float32),
+        "labels": torch.ones((1,), dtype=torch.int64),
+        "image_id": torch.tensor([0], dtype=torch.int64),
+        "area": torch.tensor([32.0], dtype=torch.float32),
+        "iscrowd": torch.zeros((1,), dtype=torch.int64),
+    }
+    augmenter = detection_training._DetectionOnlineAugmenter(
+        DetectionAugmentationConfig(enabled=True),
+        image_min_size=6,
+        image_max_size=8,
+    )
+
+    transformed_image, transformed_target = augmenter(image, target)
+
+    assert transformed_image.shape == (3, 6, 8)
+    assert torch.equal(
+        transformed_target["boxes"],
+        torch.tensor([[1.0, 1.0, 3.0, 5.0]], dtype=torch.float32),
+    )
+    assert torch.equal(
+        transformed_target["area"],
+        torch.tensor([8.0], dtype=torch.float32),
+    )
+
+
+def test_augmented_image_range_clamps_only_numerical_overshoot() -> None:
+    image = torch.tensor(
+        [[[1.0 + torch.finfo(torch.float32).eps]]],
+        dtype=torch.float32,
+    ).expand(3, 1, 1)
+
+    clamped = detection_training._clamp_augmented_image_range(image)
+
+    assert torch.equal(clamped, torch.ones_like(image))
+
+
+def test_augmented_image_range_rejects_material_overflow() -> None:
+    image = torch.full((3, 1, 1), 1.01, dtype=torch.float32)
+
+    with pytest.raises(DetectionTrainingError, match="invalid image values"):
+        detection_training._clamp_augmented_image_range(image)
+
+
+def test_build_loader_filters_to_original_variant(tmp_path: Path) -> None:
+    dataset_root, manifest_path = write_manifest_dataset(tmp_path)
+    config = DetectionTrainingConfig(
+        dataset_root=dataset_root,
+        manifest_path=manifest_path,
+        output_dir=tmp_path / "runs",
+        epochs=1,
+        batch_size=1,
+        learning_rate=0.01,
+        momentum=0.9,
+        weight_decay=0.0,
+        num_workers=0,
+        num_classes=2,
+        image_min_size=64,
+        image_max_size=128,
+        trainable_backbone_layers=0,
+        pretrained_weights="none",
+        device="cpu",
+        seed=1,
+        dataset_variant="original",
+        excluded_sample_id_suffixes=("_blur", "_dark", "_light"),
+    )
+
+    loader = detection_training._build_loader(config, split="train", shuffle=False)
+
+    assert len(loader.dataset) == 1
 
 
 def test_load_detection_training_config_rejects_invalid_device(tmp_path: Path) -> None:
@@ -345,6 +498,7 @@ def test_make_detection_target_excludes_source_class_zero_from_foreground(
                 "source_csv_line": "2",
                 "annotation_count": "1",
                 "annotations_json": json.dumps([annotation]),
+                "variant": "original",
             }
         )
     from orallens_ml.data.orthodontic_plaque_dataset import OrthodonticPlaquePart2Dataset
@@ -435,6 +589,7 @@ def test_faster_rcnn_training_accepts_no_plaque_target(tmp_path: Path) -> None:
                 "source_csv_line": "2",
                 "annotation_count": "1",
                 "annotations_json": json.dumps([annotation]),
+                "variant": "original",
             }
         )
     from orallens_ml.data.orthodontic_plaque_dataset import OrthodonticPlaquePart2Dataset
