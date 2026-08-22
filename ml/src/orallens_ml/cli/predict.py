@@ -36,6 +36,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "image_path": str(result.image_path),
                 "image_width": result.image_width,
                 "output_path": str(result.output_path),
+                "input_assessment": {
+                    "status": result.input_assessment.status,
+                    "reason_codes": list(result.input_assessment.reason_codes),
+                    "mean_luminance": result.input_assessment.mean_luminance,
+                    "luminance_stddev": result.input_assessment.luminance_stddev,
+                },
                 "prediction_count": len(result.predictions),
                 "predictions": [
                     {
@@ -45,7 +51,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     }
                     for prediction in result.predictions
                 ],
-                "status": "detection-predicted",
+                "status": (
+                    "detection-predicted"
+                    if result.input_assessment.is_supported
+                    else "input-unsupported"
+                ),
             }
         else:
             raise DetectionInferenceError(f"Unknown command: {args.command}")
@@ -59,4 +69,3 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
