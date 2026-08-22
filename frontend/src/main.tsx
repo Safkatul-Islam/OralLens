@@ -10,6 +10,27 @@ type Detection = {
   score: number;
 };
 
+type InputAssessment = {
+  status: "not_assessed" | "supported" | "unsupported";
+  reason_codes: string[];
+  summary: string;
+  image_width: number | null;
+  image_height: number | null;
+  mean_luminance: number | null;
+  luminance_stddev: number | null;
+};
+
+type Prediction = {
+  label: string;
+  display_name: string;
+  confidence: number;
+  severity: string;
+  is_mock: boolean;
+  model_name: string;
+  prediction_count: number;
+  detections: Detection[];
+};
+
 type ScanRecord = {
   id: string;
   created_at: string;
@@ -17,16 +38,8 @@ type ScanRecord = {
   content_type: string;
   size_bytes: number;
   sha256: string;
-  prediction: {
-    label: string;
-    display_name: string;
-    confidence: number;
-    severity: string;
-    is_mock: boolean;
-    model_name: string;
-    prediction_count: number;
-    detections: Detection[];
-  };
+  prediction: Prediction | null;
+  input_assessment: InputAssessment;
   evidence: {
     kind: string;
     summary: string;
@@ -149,7 +162,13 @@ function App() {
             </button>
 
             <p className="visually-hidden" role="status" aria-atomic="true">
-              {isSubmitting ? "Scanning image." : scan.current ? "Scan complete." : ""}
+              {isSubmitting
+                ? "Scanning image."
+                : scan.current?.input_assessment.status === "unsupported"
+                  ? "Image unsupported. The condition scan did not run."
+                  : scan.current
+                    ? "Scan complete."
+                    : ""}
             </p>
 
             {error ? (
@@ -169,7 +188,7 @@ function App() {
 
 function ImagePreview({ scan, src }: { scan: ScanRecord | null; src: string }) {
   const [size, setSize] = React.useState<{ width: number; height: number } | null>(null);
-  const detections = scan?.prediction.detections ?? [];
+  const detections = scan?.prediction?.detections ?? [];
 
   return (
     <div className="image-stage">
@@ -212,6 +231,10 @@ function ResultPanel({ scan }: { scan: ScanRecord | null }) {
         <p>Upload an oral image to view prediction metadata, evidence, and report text.</p>
       </section>
     );
+  }
+
+  if (scan.input_assessment.status === "unsupported" || !scan.prediction) {
+    return <UnsupportedResult scan={scan} />;
   }
 
   const score = scan.prediction.confidence.toFixed(3);
@@ -284,6 +307,96 @@ function ResultPanel({ scan }: { scan: ScanRecord | null }) {
       <p className="disclaimer">{scan.report.disclaimer}</p>
     </section>
   );
+}
+
+function UnsupportedResult({ scan }: { scan: ScanRecord }) {
+  const assessment = scan.input_assessment;
+  const dimensions =
+    assessment.image_width && assessment.image_height
+      ? `${assessment.image_width} × ${assessment.image_height} px`
+      : "Unavailable";
+
+  return (
+    <section className="result-panel abstention-panel" aria-label="Scan result">
+      <div className="abstention-heading">
+        <div>
+          <p className="eyebrow">Input assessment</p>
+          <h2>Image not assessed</h2>
+        </div>
+        <span className="status-chip">Detector not run</span>
+      </div>
+
+      <div className="alert abstention-alert" role="note">
+        <AlertTriangle size={18} aria-hidden="true" />
+        <span>{assessment.summary}</span>
+      </div>
+
+      <dl className="metrics-grid assessment-metrics">
+        <div>
+          <dt>Status</dt>
+          <dd>Unsupported input</dd>
+        </div>
+        <div>
+          <dt>Image dimensions</dt>
+          <dd>{dimensions}</dd>
+        </div>
+        <div>
+          <dt>Detector score</dt>
+          <dd>Not produced</dd>
+        </div>
+        <div>
+          <dt>Detections</dt>
+          <dd>Not produced</dd>
+        </div>
+      </dl>
+
+      <section className="report-section">
+        <h3>Why the system abstained</h3>
+        <ul className="assessment-reasons">
+          {assessment.reason_codes.map((reason) => (
+            <li key={reason}>{formatAssessmentReason(reason)}</li>
+          ))}
+        </ul>
+      </section>
+
+      <section className="report-section">
+        <h3>Report</h3>
+        <p>{scan.report.summary}</p>
+      </section>
+
+      <section className="report-section split-list">
+        <div>
+          <h3>Limitations</h3>
+          <ul>
+            {scan.report.limitations.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+        </div>
+        <div>
+          <h3>Next steps</h3>
+          <ul>
+            {scan.report.recommended_next_steps.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+        </div>
+      </section>
+
+      <p className="disclaimer">{scan.report.disclaimer}</p>
+    </section>
+  );
+}
+
+function formatAssessmentReason(reason: string) {
+  const labels: Record<string, string> = {
+    image_too_small: "Image resolution is too small.",
+    image_too_large: "Decoded image dimensions are too large.",
+    image_too_dark: "Image is too dark.",
+    image_too_bright: "Image is too bright.",
+    image_low_contrast: "Image has too little visual contrast.",
+  };
+  return labels[reason] ?? "Image did not pass a configured technical-quality check.";
 }
 
 function formatBytes(value: number) {
