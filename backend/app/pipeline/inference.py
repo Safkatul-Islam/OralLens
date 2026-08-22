@@ -2,10 +2,14 @@ import hashlib
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 from uuid import uuid4
 
-from app.schemas import DetectionBoxResponse, PredictionResponse
+from app.schemas import (
+    DetectionBoxResponse,
+    InputAssessmentResponse,
+    PredictionResponse,
+)
 
 _ML_CONTENT_TYPE_SUFFIXES = {
     "image/jpeg": ".jpg",
@@ -19,6 +23,59 @@ class InferencePipelineError(RuntimeError):
 
 class UnsupportedInferenceInputError(InferencePipelineError):
     """Raised when the selected inference backend cannot process the upload type."""
+
+
+class InvalidInferenceInputError(InferencePipelineError):
+    """Raised when supported-format bytes cannot be decoded safely."""
+
+
+AssessmentStatus = Literal["not_assessed", "supported", "unsupported"]
+_ASSESSMENT_MESSAGES = {
+    "image_too_small": "The image resolution is too small for this screening pipeline.",
+    "image_too_large": "The decoded image is too large to process safely.",
+    "image_too_dark": "The image is too dark for reliable visual screening.",
+    "image_too_bright": "The image is too bright for reliable visual screening.",
+    "image_low_contrast": "The image has too little visual contrast for reliable screening.",
+}
+
+
+@dataclass(frozen=True)
+class InferenceAssessment:
+    status: AssessmentStatus
+    reason_codes: tuple[str, ...] = ()
+    image_width: int | None = None
+    image_height: int | None = None
+    mean_luminance: float | None = None
+    luminance_stddev: float | None = None
+
+    def __post_init__(self) -> None:
+        if any(code not in _ASSESSMENT_MESSAGES for code in self.reason_codes):
+            raise InferencePipelineError("Input assessment has an unknown reason code.")
+        if self.status == "unsupported" and not self.reason_codes:
+            raise InferencePipelineError("Unsupported input requires a rejection reason.")
+        if self.status != "unsupported" and self.reason_codes:
+            raise InferencePipelineError(
+                "Only unsupported input may contain rejection reasons."
+            )
+
+    @property
+    def summary(self) -> str:
+        if self.status == "not_assessed":
+            return "This pipeline did not perform an input-quality assessment."
+        if self.status == "supported":
+            return "The image passed the configured technical-quality checks."
+        return " ".join(_ASSESSMENT_MESSAGES[code] for code in self.reason_codes)
+
+    def to_response(self) -> InputAssessmentResponse:
+        return InputAssessmentResponse(
+            status=self.status,
+            reason_codes=list(self.reason_codes),
+            summary=self.summary,
+            image_width=self.image_width,
+            image_height=self.image_height,
+            mean_luminance=self.mean_luminance,
+            luminance_stddev=self.luminance_stddev,
+        )
 
 
 @dataclass(frozen=True)
@@ -59,10 +116,26 @@ class InferenceResult:
         )
 
 
+@dataclass(frozen=True)
+class InferenceOutcome:
+    assessment: InferenceAssessment
+    prediction: InferenceResult | None
+
+    def __post_init__(self) -> None:
+        if self.assessment.status == "unsupported" and self.prediction is not None:
+            raise InferencePipelineError(
+                "Unsupported input cannot contain a condition prediction."
+            )
+        if self.assessment.status != "unsupported" and self.prediction is None:
+            raise InferencePipelineError(
+                "Supported or unassessed input requires a condition prediction."
+            )
+
+
 class InferencePipeline(Protocol):
     """Backend inference contract used by the scan service."""
 
-    def predict(self, image_bytes: bytes, content_type: str) -> InferenceResult:
+    def predict(self, image_bytes: bytes, content_type: str) -> InferenceOutcome:
         """Return screening-support predictions for validated image bytes."""
 
 
@@ -90,19 +163,22 @@ class MockInferencePipeline:
         ),
     )
 
-    def predict(self, image_bytes: bytes, content_type: str) -> InferenceResult:
+    def predict(self, image_bytes: bytes, content_type: str) -> InferenceOutcome:
         digest = hashlib.sha256(image_bytes + content_type.encode("utf-8")).digest()
         class_index = digest[0] % len(self._CLASSES)
         confidence = 0.62 + ((digest[1] % 31) / 100)
         label, display_name, severity, evidence_summary = self._CLASSES[class_index]
-        return InferenceResult(
-            label=label,
-            display_name=display_name,
-            confidence=round(confidence, 2),
-            severity=severity,
-            evidence_summary=evidence_summary,
-            model_name="deterministic-mock-v1",
-            is_mock=True,
+        return InferenceOutcome(
+            assessment=InferenceAssessment(status="not_assessed"),
+            prediction=InferenceResult(
+                label=label,
+                display_name=display_name,
+                confidence=round(confidence, 2),
+                severity=severity,
+                evidence_summary=evidence_summary,
+                model_name="deterministic-mock-v1",
+                is_mock=True,
+            ),
         )
 
 
@@ -120,7 +196,7 @@ class MLDetectionInferencePipeline:
         self._ml_source_path = Path(ml_source_path)
         self._temp_dir = Path(temp_dir)
 
-    def predict(self, image_bytes: bytes, content_type: str) -> InferenceResult:
+    def predict(self, image_bytes: bytes, content_type: str) -> InferenceOutcome:
         suffix = _ML_CONTENT_TYPE_SUFFIXES.get(content_type)
         if suffix is None:
             raise UnsupportedInferenceInputError(
@@ -131,7 +207,7 @@ class MLDetectionInferencePipeline:
         try:
             config = self._load_config()
             result = self._run_inference(config, input_path)
-            return self._to_inference_result(result)
+            return self._to_inference_outcome(result)
         except InferencePipelineError:
             raise
         except Exception as exc:
@@ -159,9 +235,15 @@ class MLDetectionInferencePipeline:
 
     def _run_inference(self, config: object, image_path: Path) -> object:
         self._add_ml_source_path()
-        from orallens_ml.inference.detection import run_detection_inference
+        from orallens_ml.inference.detection import (
+            InvalidDetectionImageError,
+            run_detection_inference,
+        )
 
-        return run_detection_inference(config, image_path=image_path)
+        try:
+            return run_detection_inference(config, image_path=image_path)
+        except InvalidDetectionImageError as exc:
+            raise InvalidInferenceInputError(str(exc)) from exc
 
     def _add_ml_source_path(self) -> None:
         if self._ml_source_path.is_symlink() or not self._ml_source_path.is_dir():
@@ -170,11 +252,12 @@ class MLDetectionInferencePipeline:
         if source_path not in sys.path:
             sys.path.insert(0, source_path)
 
-    def _to_inference_result(self, result: object) -> InferenceResult:
+    def _to_inference_outcome(self, result: object) -> InferenceOutcome:
         model_name = getattr(result, "model_name", None)
         if not isinstance(model_name, str) or not model_name.strip():
             raise InferencePipelineError("ML inference result is missing a model name.")
         raw_predictions = getattr(result, "predictions", ())
+        assessment = self._to_assessment(getattr(result, "input_assessment", None))
         detections = tuple(
             DetectionCandidate(
                 box_xyxy=tuple(float(value) for value in prediction.box_xyxy),
@@ -183,27 +266,82 @@ class MLDetectionInferencePipeline:
             )
             for prediction in raw_predictions
         )
+        if assessment.status == "unsupported":
+            if detections:
+                raise InferencePipelineError(
+                    "Unsupported ML input returned condition detections."
+                )
+            return InferenceOutcome(assessment=assessment, prediction=None)
         confidence = max((detection.score for detection in detections), default=0.0)
         if detections:
             label = "possible_plaque"
-            display_name = "Possible plaque candidate"
+            display_name = "Plaque-positive peri-tooth region candidate"
             severity = "medium" if confidence >= 0.25 else "low"
             evidence_summary = (
-                f"Detected {len(detections)} plaque candidate(s) with the MVP detector."
+                f"Detected {len(detections)} plaque-positive peri-tooth region "
+                "candidate(s) with the detector."
             )
         else:
             label = "no_detection"
-            display_name = "No detection"
+            display_name = "No candidate regions"
             severity = "low"
-            evidence_summary = "The MVP detector returned no boxes above the configured threshold."
+            evidence_summary = (
+                "The MVP detector returned no candidate regions above the configured "
+                "threshold. This does not establish that the image is plaque-free."
+            )
 
-        return InferenceResult(
-            label=label,
-            display_name=display_name,
-            confidence=confidence,
-            severity=severity,
-            evidence_summary=evidence_summary,
-            model_name=model_name,
-            is_mock=False,
-            detections=detections,
+        return InferenceOutcome(
+            assessment=assessment,
+            prediction=InferenceResult(
+                label=label,
+                display_name=display_name,
+                confidence=confidence,
+                severity=severity,
+                evidence_summary=evidence_summary,
+                model_name=model_name,
+                is_mock=False,
+                detections=detections,
+            ),
+        )
+
+    def _to_assessment(self, assessment: object) -> InferenceAssessment:
+        status = getattr(assessment, "status", None)
+        if status not in {"supported", "unsupported"}:
+            raise InferencePipelineError("ML inference result has an invalid input assessment.")
+        raw_reason_codes = getattr(assessment, "reason_codes", ())
+        if not isinstance(raw_reason_codes, tuple):
+            raise InferencePipelineError("ML input assessment reasons must be a tuple.")
+        if any(code not in _ASSESSMENT_MESSAGES for code in raw_reason_codes):
+            raise InferencePipelineError("ML input assessment has an unknown reason code.")
+        if status == "supported" and raw_reason_codes:
+            raise InferencePipelineError("Supported ML input cannot contain rejection reasons.")
+        if status == "unsupported" and not raw_reason_codes:
+            raise InferencePipelineError("Unsupported ML input requires a rejection reason.")
+        width = getattr(assessment, "image_width", None)
+        height = getattr(assessment, "image_height", None)
+        if (
+            isinstance(width, bool)
+            or not isinstance(width, int)
+            or width <= 0
+            or isinstance(height, bool)
+            or not isinstance(height, int)
+            or height <= 0
+        ):
+            raise InferencePipelineError("ML input assessment has invalid dimensions.")
+        mean = getattr(assessment, "mean_luminance", None)
+        stddev = getattr(assessment, "luminance_stddev", None)
+        for name, value in (("mean luminance", mean), ("luminance standard deviation", stddev)):
+            if value is not None and (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not 0.0 <= float(value) <= 1.0
+            ):
+                raise InferencePipelineError(f"ML input assessment has invalid {name}.")
+        return InferenceAssessment(
+            status=status,
+            reason_codes=raw_reason_codes,
+            image_width=width,
+            image_height=height,
+            mean_luminance=None if mean is None else float(mean),
+            luminance_stddev=None if stddev is None else float(stddev),
         )
