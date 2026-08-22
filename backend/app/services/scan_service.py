@@ -8,7 +8,8 @@ from fastapi import UploadFile, status
 from app.config import Settings
 from app.pipeline.inference import (
     InferencePipeline,
-    InferenceResult,
+    InferenceOutcome,
+    InvalidInferenceInputError,
     UnsupportedInferenceInputError,
 )
 from app.schemas import EvidenceResponse, ReportResponse, ScanRecord
@@ -41,15 +42,21 @@ class ScanService:
         content = await self._read_and_validate(file)
         digest = hashlib.sha256(content).hexdigest()
         try:
-            prediction = self._inference_pipeline.predict(content, file.content_type or "")
+            outcome = self._inference_pipeline.predict(content, file.content_type or "")
         except UnsupportedInferenceInputError as exc:
             raise UploadValidationError(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, str(exc)) from exc
+        except InvalidInferenceInputError as exc:
+            raise UploadValidationError(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
         evidence = EvidenceResponse(
             kind="summary",
-            summary=prediction.evidence_summary,
+            summary=(
+                outcome.prediction.evidence_summary
+                if outcome.prediction is not None
+                else outcome.assessment.summary
+            ),
         )
-        report = self._build_report(prediction)
+        report = self._build_report(outcome)
 
         record = ScanRecord(
             id=str(uuid4()),
@@ -58,7 +65,12 @@ class ScanService:
             content_type=file.content_type or "application/octet-stream",
             size_bytes=len(content),
             sha256=digest,
-            prediction=prediction.to_response(),
+            prediction=(
+                outcome.prediction.to_response()
+                if outcome.prediction is not None
+                else None
+            ),
+            input_assessment=outcome.assessment.to_response(),
             evidence=evidence,
             report=report,
         )
@@ -131,7 +143,30 @@ class ScanService:
         safe_name = Path(filename or "uploaded-image").name.strip()
         return safe_name or "uploaded-image"
 
-    def _build_report(self, prediction: InferenceResult) -> ReportResponse:
+    def _build_report(self, outcome: InferenceOutcome) -> ReportResponse:
+        prediction = outcome.prediction
+        if prediction is None:
+            return ReportResponse(
+                title="Image Assessment Report",
+                summary=(
+                    "The condition detector did not run because the image did not pass "
+                    f"the configured technical-quality checks. {outcome.assessment.summary}"
+                ),
+                limitations=[
+                    "These automated checks measure basic technical image properties only.",
+                    "They do not determine whether teeth, plaque, or disease are present.",
+                    "This result is an abstention, not a diagnosis or plaque-free finding.",
+                ],
+                recommended_next_steps=[
+                    "Retake the image with even lighting and the teeth clearly visible.",
+                    "Use a supported JPEG or PNG image with adequate resolution and contrast.",
+                    "Consult a licensed dental professional for real symptoms or concerns.",
+                ],
+                disclaimer=(
+                    "OralLens AI is a learning project for screening support. "
+                    "It is not a medical device and does not provide diagnosis."
+                ),
+            )
         score_label = "mock score" if prediction.is_mock else "maximum detector score"
         formatted_score = f"{prediction.confidence:.3f}"
         mode = "mock pipeline" if prediction.is_mock else "model pipeline"
