@@ -37,6 +37,8 @@ class OrthodonticPlaqueTarget:
     sample_id: str
     patient_id: str
     split: str
+    image_relative_path: PurePosixPath
+    variant: str | None
     source_csv_line: int
     boxes: Tensor
     labels: Tensor
@@ -50,6 +52,7 @@ class _ManifestSample:
     patient_id: str
     split: str
     image_relative_path: PurePosixPath
+    variant: str | None
     source_csv_line: int
     annotations: tuple[dict[str, object], ...]
 
@@ -63,6 +66,8 @@ class OrthodonticPlaquePart2Dataset(Dataset[tuple[Tensor, OrthodonticPlaqueTarge
         dataset_root: Path,
         manifest_path: Path,
         split: Literal["train", "validation", "test"] | None = None,
+        variant: str | None = None,
+        excluded_sample_id_suffixes: tuple[str, ...] = (),
     ) -> None:
         root = Path(dataset_root)
         if root.is_symlink() or not root.is_dir():
@@ -76,12 +81,37 @@ class OrthodonticPlaquePart2Dataset(Dataset[tuple[Tensor, OrthodonticPlaqueTarge
             )
         if split is not None and split not in _SPLITS:
             raise OrthodonticPlaqueDatasetError(f"Unknown split: {split!r}")
+        if variant is not None:
+            variant = variant.strip()
+            if not variant or "\x00" in variant:
+                raise OrthodonticPlaqueDatasetError(
+                    "Variant filter must be a non-empty safe value"
+                )
+        normalized_suffixes = tuple(
+            _validate_excluded_suffix(suffix) for suffix in excluded_sample_id_suffixes
+        )
+        if len(normalized_suffixes) != len(set(normalized_suffixes)):
+            raise OrthodonticPlaqueDatasetError(
+                "Excluded sample ID suffixes must be unique"
+            )
 
         self.dataset_root = root.resolve(strict=True)
         self.manifest_path = manifest
         samples = _load_samples(manifest)
         if split is not None:
             samples = tuple(sample for sample in samples if sample.split == split)
+        if variant is not None:
+            if any(sample.variant is None for sample in samples):
+                raise OrthodonticPlaqueDatasetError(
+                    "Variant filtering requires variant metadata on every selected sample"
+                )
+            samples = tuple(sample for sample in samples if sample.variant == variant)
+        if normalized_suffixes:
+            samples = tuple(
+                sample
+                for sample in samples
+                if not sample.sample_id.endswith(normalized_suffixes)
+            )
         if not samples:
             raise OrthodonticPlaqueDatasetError("Dataset split contains no samples")
         self._samples = samples
@@ -162,9 +192,34 @@ def _sample_from_row(row: dict[str, str | None], line_number: int) -> _ManifestS
         patient_id=values["patient_id"],
         split=split,
         image_relative_path=image_relative_path,
+        variant=_optional_variant(row.get("variant"), line_number),
         source_csv_line=source_csv_line,
         annotations=annotations,
     )
+
+
+def _optional_variant(value: str | None, line_number: int) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized or "\x00" in normalized:
+        raise OrthodonticPlaqueDatasetError(
+            f"Line {line_number}: variant must be a non-empty safe value"
+        )
+    return normalized
+
+
+def _validate_excluded_suffix(value: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value.startswith("_")
+        or len(value) < 2
+        or any(character not in "abcdefghijklmnopqrstuvwxyz0123456789-_" for character in value)
+    ):
+        raise OrthodonticPlaqueDatasetError(
+            "Excluded sample ID suffixes must be normalized suffix identifiers"
+        )
+    return value
 
 
 def _required_value(value: str | None, column: str, line_number: int) -> str:
@@ -338,6 +393,8 @@ def _target_from_sample(sample: _ManifestSample) -> OrthodonticPlaqueTarget:
         sample_id=sample.sample_id,
         patient_id=sample.patient_id,
         split=sample.split,
+        image_relative_path=sample.image_relative_path,
+        variant=sample.variant,
         source_csv_line=sample.source_csv_line,
         boxes=torch.tensor(boxes, dtype=torch.float32),
         labels=torch.tensor(labels, dtype=torch.int64),
