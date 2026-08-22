@@ -21,6 +21,12 @@ from orallens_ml.modeling.detection import (
     load_detection_checkpoint,
     validate_checkpoint_compatibility,
 )
+from orallens_ml.inference.input_assessment import (
+    InputAssessment,
+    InputAssessmentError,
+    InputAssessmentPolicy,
+    load_and_assess_image,
+)
 
 DeviceName = Literal["auto", "cpu", "cuda"]
 WeightsName = Literal["none", "default"]
@@ -29,6 +35,10 @@ _IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png"})
 
 class DetectionInferenceError(ValueError):
     """Raised when detection inference cannot run safely."""
+
+
+class InvalidDetectionImageError(DetectionInferenceError):
+    """Raised when an input file cannot be decoded as a safe image."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +56,7 @@ class DetectionInferenceConfig:
     device: DeviceName
     score_threshold: float
     max_detections: int
+    input_assessment_policy: InputAssessmentPolicy
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +78,7 @@ class DetectionInferenceResult:
     image_width: int
     image_height: int
     predictions: tuple[DetectionPrediction, ...]
+    input_assessment: InputAssessment
 
 
 def load_detection_inference_config(config_path: Path) -> DetectionInferenceConfig:
@@ -84,6 +96,7 @@ def load_detection_inference_config(config_path: Path) -> DetectionInferenceConf
     model = _table(payload, "model")
     inference = _table(payload, "inference")
     output = _table(payload, "output")
+    input_policy = _input_assessment_policy(payload.get("input_policy"))
 
     return DetectionInferenceConfig(
         model_name=_model_name(model, "model_name"),
@@ -102,6 +115,7 @@ def load_detection_inference_config(config_path: Path) -> DetectionInferenceConf
         device=_device_name(inference, "device"),
         score_threshold=_threshold(inference, "score_threshold"),
         max_detections=_positive_int(inference, "max_detections"),
+        input_assessment_policy=input_policy,
     )
 
 
@@ -114,23 +128,38 @@ def run_detection_inference(
     """Run one-image detection inference and write predictions JSON."""
 
     _validate_inference_inputs(config)
-    image, width, height = _load_image_tensor(image_path)
+    _validate_input_image_path(image_path)
+    try:
+        assessed_image = load_and_assess_image(
+            image_path,
+            policy=config.input_assessment_policy,
+        )
+    except InputAssessmentError as exc:
+        raise InvalidDetectionImageError(str(exc)) from exc
+    assessment = assessed_image.assessment
+    width = assessment.image_width
+    height = assessment.image_height
     _prepare_output_dir(config.output_dir)
-    device = _select_device(config.device)
-    model = _build_model(config, model_factory=model_factory).to(device)
-    _load_checkpoint(model, config.checkpoint_path, config=config, device=device)
-    model.eval()
+    predictions: tuple[DetectionPrediction, ...] = ()
+    if assessment.is_supported:
+        if assessed_image.image is None:
+            raise DetectionInferenceError("Supported input is missing decoded image data")
+        image = _pil_to_float_tensor(assessed_image.image)
+        device = _select_device(config.device)
+        model = _build_model(config, model_factory=model_factory).to(device)
+        _load_checkpoint(model, config.checkpoint_path, config=config, device=device)
+        model.eval()
 
-    with torch.no_grad():
-        outputs = model([image.to(device)])
-    if not isinstance(outputs, list) or len(outputs) != 1:
-        raise DetectionInferenceError("Model did not return one prediction dictionary")
-    predictions = _filter_predictions(
-        outputs[0],
-        score_threshold=config.score_threshold,
-        max_detections=config.max_detections,
-        num_classes=config.num_classes,
-    )
+        with torch.no_grad():
+            outputs = model([image.to(device)])
+        if not isinstance(outputs, list) or len(outputs) != 1:
+            raise DetectionInferenceError("Model did not return one prediction dictionary")
+        predictions = _filter_predictions(
+            outputs[0],
+            score_threshold=config.score_threshold,
+            max_detections=config.max_detections,
+            num_classes=config.num_classes,
+        )
     output_path = _safe_output_file(config.output_dir, f"{Path(image_path).stem}.json")
     output_path.write_text(
         json.dumps(
@@ -139,6 +168,7 @@ def run_detection_inference(
                 "image_path": str(Path(image_path)),
                 "image_width": width,
                 "model_name": config.model_name,
+                "input_assessment": _assessment_payload(assessment),
                 "prediction_count": len(predictions),
                 "predictions": [
                     {
@@ -161,6 +191,7 @@ def run_detection_inference(
         image_width=width,
         image_height=height,
         predictions=predictions,
+        input_assessment=assessment,
     )
 
 
@@ -224,24 +255,27 @@ def _validate_prediction_tensors(
         raise DetectionInferenceError("Prediction labels are outside configured classes")
 
 
-def _load_image_tensor(image_path: Path) -> tuple[Tensor, int, int]:
-    path = Path(image_path)
-    if path.is_symlink() or not path.is_file():
-        raise DetectionInferenceError(f"Input image is not a regular file: {path}")
-    if path.suffix.lower() not in _IMAGE_EXTENSIONS:
-        raise DetectionInferenceError(f"Unsupported input image extension: {path.suffix}")
-    with Image.open(path) as image:
-        rgb_image = image.convert("RGB")
-        width, height = rgb_image.size
-        data = torch.frombuffer(bytearray(rgb_image.tobytes()), dtype=torch.uint8)
-    tensor = (
+def _pil_to_float_tensor(image: Image.Image) -> Tensor:
+    width, height = image.size
+    data = torch.frombuffer(bytearray(image.tobytes()), dtype=torch.uint8)
+    return (
         data.view(height, width, 3)
         .permute(2, 0, 1)
         .contiguous()
         .to(torch.float32)
         .div(255.0)
     )
-    return tensor, width, height
+
+
+def _assessment_payload(assessment: InputAssessment) -> dict[str, object]:
+    return {
+        "status": assessment.status,
+        "reason_codes": list(assessment.reason_codes),
+        "image_width": assessment.image_width,
+        "image_height": assessment.image_height,
+        "mean_luminance": assessment.mean_luminance,
+        "luminance_stddev": assessment.luminance_stddev,
+    }
 
 
 def _build_model(
@@ -289,6 +323,26 @@ def _validate_inference_inputs(config: DetectionInferenceConfig) -> None:
         raise DetectionInferenceError(f"Output directory is a symlink: {config.output_dir}")
     if config.output_dir.exists() and not config.output_dir.is_dir():
         raise DetectionInferenceError(f"Output path is not a directory: {config.output_dir}")
+    _validate_input_assessment_policy(config.input_assessment_policy)
+
+
+def _validate_input_image_path(image_path: Path) -> None:
+    path = Path(image_path)
+    if path.suffix.lower() not in _IMAGE_EXTENSIONS:
+        raise InvalidDetectionImageError(
+            f"Unsupported input image extension: {path.suffix}"
+        )
+
+
+def _validate_input_assessment_policy(policy: InputAssessmentPolicy) -> None:
+    if policy.min_short_side <= 0:
+        raise DetectionInferenceError("min_short_side must be positive")
+    if policy.max_pixels <= 0:
+        raise DetectionInferenceError("max_pixels must be positive")
+    if not 0.0 <= policy.min_mean_luminance < policy.max_mean_luminance <= 1.0:
+        raise DetectionInferenceError("luminance bounds must satisfy 0 <= min < max <= 1")
+    if not 0.0 <= policy.min_luminance_stddev <= 1.0:
+        raise DetectionInferenceError("min_luminance_stddev must be between 0 and 1")
 
 
 def _select_device(name: DeviceName) -> torch.device:
@@ -395,3 +449,34 @@ def _device_name(payload: dict[str, object], key: str) -> DeviceName:
     if value == "auto" or value == "cpu" or value == "cuda":
         return value
     raise DetectionInferenceError(f"{key} must be 'auto', 'cpu', or 'cuda'")
+
+
+def _input_assessment_policy(value: object) -> InputAssessmentPolicy:
+    if value is None:
+        return InputAssessmentPolicy(
+            enabled=False,
+            min_short_side=256,
+            max_pixels=30_000_000,
+            min_mean_luminance=0.05,
+            max_mean_luminance=0.98,
+            min_luminance_stddev=0.02,
+        )
+    if not isinstance(value, dict):
+        raise DetectionInferenceError("input_policy must be a TOML table")
+    policy = InputAssessmentPolicy(
+        enabled=_boolean(value, "enabled"),
+        min_short_side=_positive_int(value, "min_short_side"),
+        max_pixels=_positive_int(value, "max_pixels"),
+        min_mean_luminance=_threshold(value, "min_mean_luminance"),
+        max_mean_luminance=_threshold(value, "max_mean_luminance"),
+        min_luminance_stddev=_threshold(value, "min_luminance_stddev"),
+    )
+    _validate_input_assessment_policy(policy)
+    return policy
+
+
+def _boolean(payload: dict[str, object], key: str) -> bool:
+    value = payload.get(key)
+    if not isinstance(value, bool):
+        raise DetectionInferenceError(f"{key} must be a boolean")
+    return value
