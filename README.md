@@ -1,157 +1,162 @@
 # OralLens AI
 
-OralLens AI is an end-to-end portfolio project for **experimental oral-image screening support**. A React interface uploads a JPEG or PNG image to a FastAPI API, which can run a TorchVision Faster R-CNN detector and return candidate plaque boxes, detector scores, evidence text, limitations, and suggested next steps.
+OralLens AI is an end-to-end AI/ML engineering project for experimental oral-image screening support. A React interface uploads an oral image to FastAPI, which validates the request, runs a project-local TorchVision Faster R-CNN detector, and returns localized plaque-positive peri-tooth region candidates with detector scores, evidence, limitations, and next steps.
 
-> OralLens AI is a learning and engineering project. It is not a diagnostic system, a clinically validated model, a medical device, or a source of treatment recommendations.
+> OralLens AI is not a diagnostic system, clinically validated model, medical device, or treatment-recommendation system. Detector scores are ranking values, not disease probabilities.
 
 ## Current status
 
-The local MVP works end to end:
+The current portfolio scope is complete:
 
-1. The browser validates the selected file type and shows an image preview.
-2. `POST /scans` validates upload metadata, size, extension, and file signature.
-3. The backend invokes either a deterministic mock adapter or the project-local v3 ML detector.
-4. The API stores a scan record and returns structured detections and report content.
-5. The frontend overlays the returned boxes and presents the screening-support result.
+- patient- and original-family-safe dataset partitions
+- corrected foreground-label semantics
+- controlled baseline and improvement experiment
+- validation-only checkpoint and threshold selection
+- one frozen originals-only test evaluation
+- frozen epoch-9 checkpoint integrated into FastAPI
+- automated frontend, backend, ML, and real-model integration coverage
 
-The GPU-backed workflow has been manually verified from the browser through FastAPI and the real v3 checkpoint. The latest verification returned HTTP `201`, rendered 15 candidate boxes, exposed the explicit `orthodontic-plaque-mvp-v3` model identity, and displayed the expected score limitation and disclaimer. Generated scan and prediction artifacts remain local evidence and are excluded from version control.
+The deployed model is `orthodontic-plaque-mvp-v4-originals-online-aug-epoch9`. It uses score threshold `0.80` and returns class `1` as a plaque-positive peri-tooth region candidate.
 
-The application plumbing is working, but the active v3 model is not a credible application-facing model. A source-label audit found that historical v1-v3 target conversion treated 1,170 plaque-absent annotated regions as plaque objects, and manual consumer-style challenge images exposed severe domain shift. V3 remains active only as historical end-to-end engineering evidence.
+## Case-study result
 
-## Model status and evidence correction
+Experiment 1 replaced independently sampled pre-generated derivatives with original-family-balanced online augmentation while keeping Faster R-CNN and the optimizer exposure approximately constant.
 
-The active application model is v3, a binary TorchVision Faster R-CNN with a ResNet-50 FPN backbone. Its runtime contract is:
+| Patient-held-out originals-only test metric | Corrected v4 baseline | Final model | Relative change |
+|---|---:|---:|---:|
+| AP@0.50 | 0.8034 | **0.8335** | +3.7% |
+| mAP@0.50:0.95 | 0.4198 | **0.5164** | +23.0% |
+| Precision | 0.7206 | **0.7830** | +8.7% |
+| Recall | 0.7858 | **0.8067** | +2.7% |
+| F1 | 0.7518 | **0.7947** | +5.7% |
+| False positives/image | 3.6822 | **2.7009** | -26.6% |
+| Localization failures | 95 | **58** | -38.9% |
+| Mean matched IoU | 0.7808 | **0.8240** | +5.5% |
 
-- class `0`: background
-- class `1`: plaque candidate
-- training data: verified Part 2 orthodontic-plaque dataset
-- split policy: patient-aware train, validation, and test groups
-- v3 training: three complete train/validation epochs with durable last/best checkpoints
-- v3 operating threshold: `0.85`, selected on the complete validation split
+The fixed test population contains 107 genuine original images, 12 held-out patients, and 1,293 foreground regions. The threshold and epoch were frozen using validation only; the test result was not used for retuning.
 
-The source annotations use `0` for plaque absent in an annotated region and `1` for plaque present. Historical conversion assigned detector label `1` to both values. All published v1-v3 precision, recall, F1, IoU, calibration, and patient-level numbers are therefore contaminated and retained only as experiment-history artifacts. They are not valid current plaque-only performance evidence.
-
-The conversion is now corrected and regression-tested: every source box is validated, only source label `1` becomes a plaque target, and images with no positive targets are supported. A fresh v4 run on the same source-aware AIRC image distribution was stopped after two completed epochs: training loss fell while validation loss worsened, and epoch 1 remained the best checkpoint. V4 has not been evaluated, integrated, or promoted and must not be resumed. The next experiment is blocked on a condition-specific task contract, admission of genuinely complementary target-domain data, and a CUDA-enforced training preflight. See [Data strategy](docs/DATA_STRATEGY.md), [Training and evaluation](docs/TRAINING.md), and [Dataset card](docs/DATASET_CARD.md).
+See [Training and evaluation](docs/TRAINING.md) for the experiment contract, exact counts, metrics, and limitations.
 
 ## Architecture
 
 ```text
 React/Vite UI
-     |
-     | multipart image upload
-     v
-FastAPI routes -> ScanService -> validation -> inference adapter
-                                      |             |
-                                      |             +-> mock adapter
-                                      |             +-> TorchVision detector
-                                      v
-                               JSON scan store
+    |
+    | POST /scans (multipart image)
+    v
+FastAPI route -> ScanService -> upload validation + SHA-256
                                       |
                                       v
-                      boxes + evidence + report -> UI
+                           InferencePipeline boundary
+                             |                  |
+                             | mock             | ml
+                             v                  v
+                    deterministic result   input assessment
+                                                |
+                                      supported | unsupported
+                                                v
+                                  Faster R-CNN / abstention
+                                                |
+                                                v
+                     typed response + local JSON scan record
+                                                |
+                                                v
+                              report + bounding-box overlay
 ```
 
-Responsibilities are separated across routes, schemas, services, storage, backend-to-ML integration, and the project-local ML package. See [Pipeline](docs/PIPELINE.md) for the step-by-step operational flow and [Architecture](docs/ARCHITECTURE.md) for system boundaries and deployment context.
+Responsibilities remain separated across routes, schemas, services, storage, inference adapters, and the project-local ML package. See [Pipeline](docs/PIPELINE.md) and [Architecture](docs/ARCHITECTURE.md).
+
+## Dataset boundary
+
+Only the verified Part 2 AIRC/LabDen orthodontic-plaque source is used.
+
+| Split | Genuine originals | Patients | Foreground regions |
+|---|---:|---:|---:|
+| Train | 480 | 55 | 5,502 |
+| Validation | 58 | 7 | 710 |
+| Test | 107 | 12 | 1,293 |
+
+All images belonging to one patient or derivative/original family remain in one partition. Stored brightness, flip, and rotation variants remain available as source provenance but are not independent samples in the final experiment.
 
 ## Repository layout
 
 ```text
-backend/   FastAPI application, services, storage, integration adapter, and tests
-frontend/  React/TypeScript/Vite screening-support interface
-ml/        dataset contracts, detector training/evaluation/inference, configs, and tests
-docs/      architecture, API, dataset, training, environment, and decision records
+backend/   FastAPI routes, services, storage, ML adapter, scripts, and tests
+frontend/  React/TypeScript/Vite upload and visualization interface
+ml/        dataset contracts, Faster R-CNN lifecycle, configs, and tests
+docs/      architecture, pipeline, API, dataset, training, and environment guides
 ```
 
-Datasets, checkpoints, run output, local scan records, virtual environments, and frontend build output are intentionally ignored by git.
+Datasets, checkpoints, run output, scan records, virtual environments, and frontend build artifacts are ignored by git.
 
-## Run the local MVP
+## Run locally
 
-The real-ML workflow requires the prepared dataset, the trained v3 checkpoint, and the project-local `ml\.venv`. Setup and reproducibility details are in [ML environment](docs/ML_ENVIRONMENT.md).
+Requirements:
 
-From the repository root, start the ML-backed API:
+- project-local Python environment at `ml\.venv`
+- local prepared dataset and frozen checkpoint at the paths declared by the inference config
+- project-local frontend dependencies
+
+Start the model-backed API from the repository root:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File backend\scripts\run-ml-server.ps1
 ```
 
-In a second terminal, start the frontend:
+Start the frontend in a second terminal:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File frontend\scripts\run-dev.ps1
 ```
 
-Open `http://127.0.0.1:5173`, select a JPEG or PNG image, and run a scan. The backend listens on `http://127.0.0.1:8000`.
+Open `http://127.0.0.1:5173`. The backend listens on `http://127.0.0.1:8000`.
 
-For the lightweight backend without loading the ML model, use its default `mock` inference mode as described in [Backend guide](backend/README.md).
+The backend defaults to deterministic mock mode when it is not launched through the real-ML script.
 
-## Verification status
+## Verification
 
-Latest completed checks:
+Latest relevant verification:
 
-- ML suite: `174 passed, 1 skipped`
-- backend suite: `24 passed, 1 skipped`
-- real backend-to-ML integration smoke: `1 passed`
-- frontend Playwright/axe browser suite: `5 passed`
+- complete ML suite after Experiment 1 implementation: `215 passed, 2 skipped`
+- complete backend suite after final promotion: `32 passed, 1 skipped`
+- focused final deployment configuration and adapter contracts: `13 passed`
+- real FastAPI-to-frozen-model integration smoke: `1 passed`
+- automated Chromium interaction/accessibility suite: `5 passed`
 - frontend production build: passed
-- manual browser-to-backend-to-v3 scan: passed
-- frontend dependency audit: `0` known vulnerabilities across `82` dependencies
 
-The skipped ML test requires Windows symbolic-link privileges. The skipped backend test is an opt-in real-ML integration case that passes when explicitly enabled.
+The final real-model smoke returned HTTP `201`, model identity `orthodontic-plaque-mvp-v4-originals-online-aug-epoch9`, and 14 class-1 detections with scores above the frozen `0.80` threshold.
 
 ## Security and reliability controls
 
-- explicit CORS origins for both local loopback hostnames
-- browser-side JPEG/PNG MIME-and-extension validation before transmission; backend byte-level validation remains authoritative
+- explicit local CORS allowlist
 - bounded upload size and chunked reads
-- MIME type, extension, and magic-byte validation
-- sanitized display filenames and SHA-256 content digests
-- constrained temporary input paths with symlink and containment checks
-- state-dict-only checkpoint loading with `weights_only=True`
-- strict manifest path, annotation, numeric, file, and symlink validation
-- expected errors translated at API and evaluation boundaries instead of exposing raw tracebacks
-- validation-selected historical operating threshold; future locked results must not be used for retuning
-- checkpoint, manifest, and config hashes recorded in local trustworthiness reports
-- deployed-cap parity and score-to-match reliability measured on validation and test
-- automated Chromium interaction and WCAG A/AA scans for critical frontend states
+- MIME, extension, and magic-byte validation
+- sanitized display filenames and SHA-256 digests
+- constrained temporary paths with symlink and containment checks
+- safe image decoding and technical-quality abstention
+- checkpoint loading with `weights_only=True`
+- manifest schema, path, numeric, box, label, and split validation
+- generic user-facing errors without stack traces or internal paths
+- ignored datasets, checkpoints, predictions, scans, and secrets
 
-These controls make the portfolio MVP more disciplined; they do not make it a production medical system.
+## Honest limitations
 
-## Known limitations and next phase
+- The target is an AIRC plaque-positive peri-tooth region, not a discrete visible-plaque deposit.
+- Training uses 480 genuine originals from one orthodontic source family.
+- The held-out test contains 12 patients and is not an external or consumer-photo cohort.
+- Representative clean-mouth and consumer hard-negative images are absent.
+- Consumer selfie, device, lighting, demographic, and acquisition-site generalization is unproven.
+- The technical input gate can reject obvious dimension/luminance failures but does not establish oral ROI, blur, glare, or semantic in-distribution status.
+- Local JSON storage is demonstration infrastructure, not a multi-user clinical record system.
 
-The model was trained on one specialized orthodontic-plaque dataset under an incorrect historical target mapping that has since been corrected in source code. It has not been validated across consumer devices, framing, lighting, appliance status, demographics, or representative acquisition conditions. The UI displays the maximum detector score as a raw three-decimal ranking value, not a percentage or calibrated probability of disease. Local JSON storage is suitable for demonstration, not multi-user deployment or sensitive clinical records.
-
-The historical measurable-trust reports remain useful for pipeline provenance and failure-analysis mechanics, but their model-quality numbers inherit the target defect. Manual testing on clear internet photographs also produced very poor results, especially when lips or surrounding facial skin were visible. This is concrete evidence that the current standardized orthodontic data does not cover the application-facing image domain.
-
-Automated accessibility checks cover semantics, keyboard focus, live status, target size, reduced motion, and axe rules for critical UI states. They do not replace manual screen-reader, zoom/reflow, high-contrast, touch, or small-screen evaluation.
-
-The next phase is a realistic portfolio-quality correction, not a medical-device program or another long run on the same images:
-
-1. freeze separate task contracts for visible plaque and supragingival calculus; do not merge them into one label
-2. audit the ODS/Oralformer release as the first calculus data-feasibility candidate, without downloading or training until provenance, license, patient identity, acquisition context, mask semantics, and redistribution terms pass
-3. continue access review for the strongest non-orthodontic plaque sources
-4. add a separate oral ROI, image-quality, OOD, and abstention boundary for consumer-style inputs
-5. require CUDA explicitly, record device/utilization/throughput evidence, and run a monitored smoke test before any future pilot
-6. run only a small predeclared pilot after the data and evaluation contracts are fixed; stop on validation reversal or failure to beat the baseline
-7. select policy on validation only and evaluate once on a locked, rights-safe challenge boundary before considering promotion
-
-This can make the screening-support demonstration more credible; it cannot support diagnosis, rule-out, or clinical-validation claims.
+The measured result supports an object-detection engineering case study. It does not support diagnosis, clinical rule-out, prevalence estimates, specificity/NPV claims, or medical-device status.
 
 ## Documentation map
 
-- [Architecture](docs/ARCHITECTURE.md) - components, data flow, runtime modes, and trust boundaries
-- [Pipeline](docs/PIPELINE.md) - end-to-end runtime, ML lifecycle, artifacts, and source ownership
-- [Project brief](docs/PROJECT_BRIEF.md) - product scope, achieved MVP, exclusions, and next phase
-- [Intended use and claims](docs/INTENDED_USE_AND_CLAIMS.md) - current claim boundary and staged research target
-- [Clinical evidence plan](docs/CLINICAL_EVIDENCE_PLAN.md) - external, prospective, and human-AI evidence ladder
-- [Data acquisition and annotation](docs/DATA_ACQUISITION_AND_ANNOTATION.md) - future multi-site clinical data contract
-- [Draft external validation protocol](docs/EXTERNAL_VALIDATION_PROTOCOL.md) - Stage 1 study design, model lock, endpoints, and approval gates
-- [Clinical data dictionary](docs/CLINICAL_DATA_DICTIONARY.md) - pseudonymous entities, vocabularies, integrity rules, and release contract
-- [Clinical evidence readiness checklist](docs/CLINICAL_EVIDENCE_READINESS_CHECKLIST.md) - accountable prerequisites and current readiness status
-- [API](docs/API.md) - endpoint contracts and error behavior
-- [Training and evaluation](docs/TRAINING.md) - experiments, threshold selection, and internal test results
-- [Dataset card](docs/DATASET_CARD.md) - provenance, splits, validation, and limitations
-- [Data acquisition](docs/DATA_ACQUISITION.md) - controlled preparation workflow for the current source dataset
-- [Data strategy](docs/DATA_STRATEGY.md) - condition-specific data roles, source decisions, admission gates, and future training criteria
-- [ML environment](docs/ML_ENVIRONMENT.md) - reproducible local environment and commands
-- [Learning log](docs/LEARNING_LOG.md) - engineering decisions and lessons
+- [Pipeline](docs/PIPELINE.md) - runtime and offline flow with source ownership
+- [Architecture](docs/ARCHITECTURE.md) - component and trust boundaries
+- [API](docs/API.md) - endpoint and error contracts
+- [Training and evaluation](docs/TRAINING.md) - controlled experiment and exact evidence
+- [Dataset card](docs/DATASET_CARD.md) - source provenance and dataset constraints
+- [ML environment](docs/ML_ENVIRONMENT.md) - project-local setup
 - [Backend guide](backend/README.md), [Frontend guide](frontend/README.md), [ML guide](ml/README.md)
