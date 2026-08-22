@@ -30,14 +30,14 @@ DEFAULT_CONFIG_PATH = (
     PROJECT_ROOT
     / "ml"
     / "configs"
-    / "orthodontic_plaque_detection_mvp_v3_predict.toml"
+    / "orthodontic_plaque_detection_mvp_v4_originals_online_aug_predict.toml"
 )
 DEFAULT_CHECKPOINT_PATH = (
     PROJECT_ROOT
     / "ml"
     / "runs"
     / "detection"
-    / "orthodontic_plaque_part2_mvp_v3"
+    / "orthodontic_plaque_part2_mvp_v4_originals_online_aug"
     / "checkpoint_best.pt"
 )
 DEFAULT_ML_SOURCE_PATH = PROJECT_ROOT / "ml" / "src"
@@ -89,8 +89,14 @@ def test_backend_ml_mode_returns_model_backed_detections(tmp_path: Path) -> None
     assert response.status_code == 201
     payload = response.json()
     prediction = payload["prediction"]
+    assert payload["input_assessment"]["status"] == "supported"
+    assert prediction is not None
     assert prediction["is_mock"] is False
-    assert prediction["model_name"] == "orthodontic-plaque-mvp-v3"
+    assert prediction["model_name"] == (
+        "orthodontic-plaque-mvp-v4-originals-online-aug-epoch9"
+    )
     assert prediction["prediction_count"] > 0
     assert prediction["prediction_count"] == len(prediction["detections"])
+    assert all(detection["label"] == 1 for detection in prediction["detections"])
+    assert all(detection["score"] >= 0.80 for detection in prediction["detections"])
     assert not any(temp_dir.iterdir())
