@@ -13,6 +13,15 @@ const SCAN_RESPONSE = {
   content_type: "image/png",
   size_bytes: PNG_BYTES.length,
   sha256: "0".repeat(64),
+  input_assessment: {
+    status: "supported",
+    reason_codes: [],
+    summary: "The image passed the configured technical-quality checks.",
+    image_width: 1,
+    image_height: 1,
+    mean_luminance: 0.5,
+    luminance_stddev: 0.2,
+  },
   prediction: {
     label: "plaque_candidate",
     display_name: "Plaque candidate",
@@ -164,6 +173,57 @@ test("successful scan exposes loading, v3 evidence, report, and overlay", async 
   await expect(page.locator(".overlay rect")).toHaveCount(1);
   await expect(page.locator(".overlay rect")).toHaveAttribute("x", "0.1");
   await expect(page.locator(".overlay rect")).toHaveAttribute("width", "0.8");
+  await expectNoWcagViolations(page);
+});
+
+test("unsupported image is presented as abstention without a model score", async ({ page }) => {
+  const unsupportedResponse = {
+    ...SCAN_RESPONSE,
+    input_assessment: {
+      status: "unsupported",
+      reason_codes: ["image_too_dark"],
+      summary: "The image is too dark for reliable visual screening.",
+      image_width: 640,
+      image_height: 480,
+      mean_luminance: 0.01,
+      luminance_stddev: 0.08,
+    },
+    prediction: null,
+    evidence: {
+      kind: "summary",
+      summary: "The image is too dark for reliable visual screening.",
+    },
+    report: {
+      title: "Image Assessment Report",
+      summary: "The condition detector did not run because the image was too dark.",
+      limitations: [
+        "The automated checks measure technical image properties only.",
+        "This abstention is not a diagnosis or plaque-free finding.",
+      ],
+      recommended_next_steps: ["Retake the image with even lighting."],
+      disclaimer: "Experimental screening support only; not a diagnosis.",
+    },
+  };
+
+  await page.route("http://127.0.0.1:8000/scans", async (route) => {
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify(unsupportedResponse),
+    });
+  });
+
+  await page.goto("/");
+  await selectPng(page);
+  await page.getByRole("button", { name: "Run scan" }).click();
+
+  await expect(page.getByRole("heading", { level: 2, name: "Image not assessed" })).toBeVisible();
+  await expect(page.getByRole("status")).toHaveText("Image unsupported. The condition scan did not run.");
+  await expect(page.getByText("Detector not run", { exact: true })).toBeVisible();
+  await expect(page.getByText("Image is too dark.", { exact: true })).toBeVisible();
+  await expect(page.getByText("Not produced", { exact: true })).toHaveCount(2);
+  await expect(page.locator(".score")).toHaveCount(0);
+  await expect(page.locator(".overlay rect")).toHaveCount(0);
   await expectNoWcagViolations(page);
 });
 
