@@ -2,158 +2,156 @@
 
 ## Scope
 
-The FastAPI service validates oral-image uploads, invokes the configured inference adapter, stores scan records locally, and returns structured screening-support output. The API does not return a diagnosis or treatment recommendation.
+The FastAPI backend accepts oral-image uploads and returns experimental screening-support records. It does not return diagnoses, calibrated disease probabilities, treatment advice, or clinical rule-out decisions.
 
-Local base URL: `http://127.0.0.1:8000`
+Default local base URL:
 
-Interactive OpenAPI documentation is available at `/docs` while the server is running.
+`http://127.0.0.1:8000`
 
 ## Runtime modes
 
 | Mode | Default | Behavior |
 |---|---:|---|
-| `mock` | yes | Deterministic hash-based placeholder for API development and tests |
-| `ml` | no | Project-local v3 TorchVision plaque-candidate detector |
+| `mock` | yes | deterministic placeholder for API development and tests |
+| `ml` | no | frozen Faster R-CNN detector through the project-local ML package |
 
-`backend\scripts\run-ml-server.ps1` selects `ml` mode and the v3 prediction config. Application startup without that setting uses `mock` mode.
+`backend\scripts\run-ml-server.ps1` selects ML mode and the final prediction config:
 
-## Endpoints
+`ml/configs/orthodontic_plaque_detection_mvp_v4_originals_online_aug_predict.toml`
 
-### `GET /health`
+The active ML contract is epoch 9, threshold `0.80`, maximum 100 detections, and model identity `orthodontic-plaque-mvp-v4-originals-online-aug-epoch9`.
 
-Returns service status, name, version, and environment. It verifies that the API process can respond; it is not a deep detector-readiness check.
+## `POST /scans`
 
-### `POST /scans`
-
-Creates a scan from a multipart upload.
+Creates one scan record.
 
 Request:
 
 - content type: `multipart/form-data`
 - field name: `file`
-- maximum payload: 5 MiB by default
-- frontend and ML mode: JPEG or PNG
-- mock-mode backend validation also recognizes WebP, but the ML adapter rejects it cleanly with HTTP `415`
+- API metadata allowlist: JPEG, PNG, or WebP
+- ML runtime formats: JPEG or PNG
+- default maximum upload size: 5 MiB
 
-Example:
+The backend verifies MIME type, filename extension, size, non-empty content, and magic bytes. The filename is display metadata only and is reduced to a basename.
 
-```powershell
-curl.exe -X POST http://127.0.0.1:8000/scans `
-  -F "file=@C:\path\to\oral-image.jpg;type=image/jpeg"
-```
-
-Successful response: HTTP `201`
+Example response shape:
 
 ```json
 {
   "id": "scan-uuid",
-  "created_at": "2026-07-29T00:00:00Z",
+  "created_at": "2026-08-21T00:00:00Z",
   "original_filename": "oral-image.jpg",
   "content_type": "image/jpeg",
   "size_bytes": 123456,
   "sha256": "content-digest",
   "prediction": {
     "label": "possible_plaque",
-    "display_name": "Possible plaque candidate",
-    "confidence": 0.995,
+    "display_name": "Plaque-positive peri-tooth region candidate",
+    "confidence": 0.93,
     "severity": "medium",
     "is_mock": false,
-    "model_name": "orthodontic-plaque-mvp-v3",
-    "prediction_count": 15,
+    "model_name": "orthodontic-plaque-mvp-v4-originals-online-aug-epoch9",
+    "prediction_count": 1,
     "detections": [
       {
-        "box_xyxy": [110.0, 72.0, 184.0, 131.0],
+        "box_xyxy": [120.0, 90.0, 210.0, 180.0],
         "label": 1,
-        "score": 0.995
+        "score": 0.93
       }
     ]
   },
+  "input_assessment": {
+    "status": "supported",
+    "reason_codes": [],
+    "summary": "The image passed the configured technical-quality checks.",
+    "image_width": 1024,
+    "image_height": 768,
+    "mean_luminance": 0.52,
+    "luminance_stddev": 0.18
+  },
   "evidence": {
     "kind": "summary",
-    "summary": "Detected 15 plaque candidate(s) with the MVP detector."
+    "summary": "Detected 1 plaque-positive peri-tooth region candidate with the detector."
   },
   "report": {
     "title": "AI Screening Support Report",
-    "summary": "The current model pipeline marked this image as 'Possible plaque candidate' with a maximum detector score of 0.995.",
-    "limitations": ["This backend response is screening-support output, not a diagnosis.", "Displayed scores are experimental ranking values, not calibrated clinical probabilities."],
-    "recommended_next_steps": ["Consult a licensed dental professional for real symptoms or concerns."],
-    "disclaimer": "OralLens AI is a learning project for screening support. It is not a medical device and does not provide diagnosis."
+    "summary": "Experimental model output.",
+    "limitations": ["This is not a diagnosis."],
+    "recommended_next_steps": ["Consult a licensed dental professional for concerns."],
+    "disclaimer": "OralLens AI is not a medical device."
   }
 }
 ```
 
-The example is structural. Counts and scores depend on the input. The API field remains named `confidence` for contract compatibility, but its value is the highest returned detector score—not a calibrated probability of disease.
+`prediction.confidence` is the maximum returned detector score. It is not a probability of plaque, disease, severity, risk, or patient outcome.
 
-### Prediction score semantics
+### Technical abstention
 
-`prediction.confidence` is the maximum score among boxes returned by active v3 after threshold `0.85` and the 25-result cap. The API returns that raw detector score without converting it into a disease probability. The frontend renders it to three decimals as `Detector score`, not as a percentage.
+Before model construction, ML mode applies:
 
-V3 complete-validation and internal-test trustworthiness reports found substantial score-to-annotation-match reliability gaps: ECE `0.1940` and `0.1878`. Even high scores remain detector outputs tied to one dataset and task, not plaque probability, diagnostic confidence, severity, or clinical risk.
+- EXIF orientation normalization
+- minimum short side: 256 pixels
+- maximum decoded pixels: 30,000,000
+- mean luminance bounds: 0.05 to 0.98
+- minimum luminance standard deviation: 0.02
 
-The `severity` field is presentation metadata for this experimental report contract. It has not been clinically validated and must not be used for triage or treatment decisions. The wording and user interpretation still require future human-factors validation.
+If the image fails, the API still returns HTTP `201` with:
+
+- `input_assessment.status = "unsupported"`
+- one or more reason codes
+- `prediction = null`
+- retake guidance
+
+This is an abstention, not a plaque-free finding.
+
+### Supported zero-box response
+
+If the image passes technical checks but no region reaches `0.80`, `prediction` remains present with:
+
+- label `no_detection`
+- confidence `0.0`
+- zero detections
+- explicit text that this does not establish plaque absence
+
+## Read endpoints
 
 ### `GET /scans`
 
-Returns all locally stored scan records:
-
-```json
-{
-  "scans": []
-}
-```
+Returns all locally stored scan records in the typed list response.
 
 ### `GET /scans/{scan_id}`
 
-Returns one stored scan or HTTP `404` when the identifier is unknown.
+Returns one record or HTTP `404` when the identifier is unknown.
 
-## Validation and errors
-
-The upload boundary checks:
-
-- configured MIME allowlist
-- filename extension allowlist
-- maximum size while reading in chunks
-- non-empty content
-- JPEG, PNG, or WebP magic bytes matching the declared type
-- ML adapter support for the selected content type
-
-The original filename is used only as sanitized display metadata. Stored records include a SHA-256 digest of validated bytes.
-
-Error responses use a stable envelope:
-
-```json
-{
-  "code": "error_code",
-  "detail": "Concise client-safe explanation.",
-  "request_id": "request-id"
-}
-```
+## Error behavior
 
 | Status | Meaning |
 |---:|---|
-| `400` | Empty upload or bytes do not match the declared image type |
-| `404` | Scan record does not exist |
-| `413` | Upload exceeds the configured limit |
-| `415` | MIME type, extension, or selected inference adapter does not support the input |
-| `500` | Unexpected internal failure; internal details are not returned to the client |
+| `400` | empty upload, signature mismatch, corrupt supported image, or invalid input |
+| `413` | upload exceeds configured byte limit |
+| `415` | unsupported MIME/extension pair or format unsupported by ML mode |
+| `422` | FastAPI request validation failure |
+| `404` | scan identifier not found |
+| `500` | unexpected internal failure with generic client detail |
+
+Errors use a structured envelope with a concise code/detail and request ID where available. Raw stack traces, filesystem paths, and exception internals are not returned.
 
 ## CORS
 
-Local development allows only:
+Default allowed origins:
 
 - `http://127.0.0.1:5173`
 - `http://localhost:5173`
 
-Allowed methods and headers are explicit; wildcard CORS is not used. Tests cover a configured origin, POST/Content-Type preflight, and rejection of an unconfigured origin.
+Allowed methods and headers are explicit; wildcard CORS is not used.
 
-## Persistence
+## Persistence and privacy
 
-The local implementation stores records in `backend/var/scans.json` using a lock and temporary-file replacement. The directory is ignored by git.
+The local JSON store records filename metadata, content type, size, digest, inference output, assessment, and report. Uploaded image bytes are not persisted by `JSONScanStore`; the ML temporary copy is removed after inference. Local records are ignored by git.
 
-This store is intended only for local demonstration. It has no authentication, encryption policy, retention policy, database migrations, or multi-process coordination and must not hold sensitive clinical records.
+This storage design is for a single-user demonstration. It is not authenticated, encrypted clinical storage or a regulated retention system.
 
-## Verification
+## Evidence boundary
 
-The latest backend suite completed with `24 passed, 1 skipped`; the opt-in real backend-to-ML integration smoke completed with `1 passed`. A manual browser request through the real v3 detector returned HTTP `201`, exposed the v3 model identity, and rendered 15 returned boxes without converting the detector score into a percentage.
-
-See [Backend guide](../backend/README.md), [Architecture](ARCHITECTURE.md), and [Training and evaluation](TRAINING.md).
+Class `1` means a plaque-positive peri-tooth region under the AIRC annotation contract. The API wording does not claim discrete visible-plaque segmentation or diagnosis. See [Training and evaluation](TRAINING.md) for measured model performance and limitations.
