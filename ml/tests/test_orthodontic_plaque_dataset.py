@@ -117,7 +117,84 @@ def test_dataset_loads_source_aware_manifest_columns(tmp_path: Path) -> None:
         manifest_path=manifest,
     )
 
+    target = dataset[0][1]
+    assert target.sample_id == "sample"
+    assert target.image_relative_path.as_posix() == (
+        "data/images/patient0001/sample.jpg"
+    )
+    assert target.variant == "original"
+
+
+def test_dataset_filters_source_aware_variant(tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.csv"
+    write_fixture(tmp_path, manifest, fieldnames=SOURCE_AWARE_FIELDNAMES)
+    with manifest.open("r", encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    augmented = dict(rows[0])
+    augmented.update(
+        {
+            "sample_id": "sample-brightness-up",
+            "image_relative_path": (
+                "data/images/patient0001/sample-brightness-up.jpg"
+            ),
+            "variant": "brightness-up",
+        }
+    )
+    source_dark = dict(rows[0])
+    source_dark.update(
+        {
+            "sample_id": "sample_dark",
+            "image_relative_path": "data/images/patient0001/sample_dark.jpg",
+            "derivative_group_id": "sample_dark",
+            "variant": "original",
+        }
+    )
+    Image.new("RGB", (4, 3), color=(40, 60, 80)).save(
+        tmp_path / "data" / "images" / "patient0001" / "sample-brightness-up.jpg"
+    )
+    Image.new("RGB", (4, 3), color=(5, 5, 5)).save(
+        tmp_path / "data" / "images" / "patient0001" / "sample_dark.jpg"
+    )
+    with manifest.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=SOURCE_AWARE_FIELDNAMES)
+        writer.writeheader()
+        writer.writerows((rows[0], augmented, source_dark))
+
+    dataset = OrthodonticPlaquePart2Dataset(
+        dataset_root=tmp_path,
+        manifest_path=manifest,
+        split="train",
+        variant="original",
+        excluded_sample_id_suffixes=("_blur", "_dark", "_light"),
+    )
+
+    assert len(dataset) == 1
     assert dataset[0][1].sample_id == "sample"
+
+
+def test_dataset_rejects_unsafe_excluded_suffix(tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.csv"
+    write_fixture(tmp_path, manifest, fieldnames=SOURCE_AWARE_FIELDNAMES)
+
+    with pytest.raises(OrthodonticPlaqueDatasetError, match="normalized suffix"):
+        OrthodonticPlaquePart2Dataset(
+            dataset_root=tmp_path,
+            manifest_path=manifest,
+            excluded_sample_id_suffixes=("../dark",),
+        )
+
+
+def test_dataset_rejects_variant_filter_for_legacy_manifest(tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.csv"
+    write_fixture(tmp_path, manifest)
+
+    with pytest.raises(OrthodonticPlaqueDatasetError, match="variant metadata"):
+        OrthodonticPlaquePart2Dataset(
+            dataset_root=tmp_path,
+            manifest_path=manifest,
+            split="train",
+            variant="original",
+        )
 
 
 def test_dataset_filters_split(tmp_path: Path) -> None:
