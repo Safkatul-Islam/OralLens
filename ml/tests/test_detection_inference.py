@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 from PIL import Image
@@ -13,6 +14,7 @@ from orallens_ml.inference.detection import (
     load_detection_inference_config,
     run_detection_inference,
 )
+from orallens_ml.inference.input_assessment import InputAssessmentPolicy
 from orallens_ml.modeling.detection import save_detection_checkpoint
 
 
@@ -60,6 +62,14 @@ def config_for(
         device="cpu",
         score_threshold=score_threshold,
         max_detections=max_detections,
+        input_assessment_policy=InputAssessmentPolicy(
+            enabled=False,
+            min_short_side=256,
+            max_pixels=25_000_000,
+            min_mean_luminance=0.05,
+            max_mean_luminance=0.98,
+            min_luminance_stddev=0.02,
+        ),
     )
 
 
@@ -112,6 +122,7 @@ output_dir = "runs/predict"
     assert config.max_detections == 10
     assert config.device == "cpu"
     assert config.model_name == "orthodontic-plaque-test-v1"
+    assert config.input_assessment_policy.enabled is False
 
 
 def test_load_detection_inference_config_requires_model_name(tmp_path: Path) -> None:
@@ -186,6 +197,45 @@ def test_run_detection_inference_writes_filtered_predictions(tmp_path: Path) -> 
     assert payload["model_name"] == "orthodontic-plaque-test-v1"
     assert payload["prediction_count"] == 1
     assert len(payload["predictions"]) == 1
+    assert payload["input_assessment"]["status"] == "supported"
+
+
+def test_run_detection_inference_abstains_before_model_construction(
+    tmp_path: Path,
+) -> None:
+    image_path = tmp_path / "images" / "small.jpg"
+    write_image(image_path)
+    checkpoint_path = tmp_path / "checkpoint.pt"
+    save_test_checkpoint(TinyPredictModel(), checkpoint_path)
+    config = config_for(tmp_path, checkpoint_path=checkpoint_path)
+    config = replace(
+        config,
+        input_assessment_policy=InputAssessmentPolicy(
+            enabled=True,
+            min_short_side=64,
+            max_pixels=25_000_000,
+            min_mean_luminance=0.0,
+            max_mean_luminance=1.0,
+            min_luminance_stddev=0.0,
+        ),
+    )
+    model_constructed = False
+
+    def model_factory(_: DetectionInferenceConfig) -> TinyPredictModel:
+        nonlocal model_constructed
+        model_constructed = True
+        return TinyPredictModel()
+
+    result = run_detection_inference(
+        config,
+        image_path=image_path,
+        model_factory=model_factory,
+    )
+
+    assert result.input_assessment.status == "unsupported"
+    assert result.input_assessment.reason_codes == ("image_too_small",)
+    assert result.predictions == ()
+    assert model_constructed is False
 
 
 def test_run_detection_inference_applies_max_detections(tmp_path: Path) -> None:
