@@ -111,6 +111,13 @@ def test_predict_detection_cli_forwards_paths_and_emits_json(
             image_path=image_path,
             image_width=8,
             output_path=tmp_path / "runs" / "sample.predictions.json",
+            input_assessment=SimpleNamespace(
+                status="supported",
+                reason_codes=(),
+                mean_luminance=0.5,
+                luminance_stddev=0.2,
+                is_supported=True,
+            ),
             predictions=[
                 SimpleNamespace(
                     box_xyxy=(1.0, 2.0, 5.0, 6.0),
@@ -140,6 +147,12 @@ def test_predict_detection_cli_forwards_paths_and_emits_json(
         "image_path": str(image_path),
         "image_width": 8,
         "output_path": str(tmp_path / "runs" / "sample.predictions.json"),
+        "input_assessment": {
+            "status": "supported",
+            "reason_codes": [],
+            "mean_luminance": 0.5,
+            "luminance_stddev": 0.2,
+        },
         "prediction_count": 1,
         "predictions": [
             {
@@ -200,6 +213,23 @@ def test_evaluate_detection_cli_forwards_config_and_emits_json(
     def run_evaluation(received_config: object) -> SimpleNamespace:
         calls["config"] = received_config
         return SimpleNamespace(
+            average_precision=SimpleNamespace(ap50=0.8, map50_95=0.6),
+            dataset_summary=SimpleNamespace(
+                image_count=10,
+                patient_count=2,
+                target_count=20,
+                variant="original",
+                excluded_sample_id_suffixes=("_blur", "_dark", "_light"),
+            ),
+            error_analysis=SimpleNamespace(
+                background_false_positives=1,
+                duplicate_detections=2,
+                false_negatives=4,
+                false_positives=3,
+                localization_failures=0,
+                low_confidence_matches=1,
+                unexplained_false_negatives=3,
+            ),
             metrics_path=tmp_path / "runs" / "metrics.json",
             metrics=[
                 SimpleNamespace(
@@ -228,6 +258,23 @@ def test_evaluate_detection_cli_forwards_config_and_emits_json(
     assert exit_code == 0
     assert calls == {"config_path": config_path, "config": config}
     assert payload == {
+        "average_precision": {"ap50": 0.8, "map50_95": 0.6},
+        "dataset": {
+            "image_count": 10,
+            "patient_count": 2,
+            "target_count": 20,
+            "variant": "original",
+            "excluded_sample_id_suffixes": ["_blur", "_dark", "_light"],
+        },
+        "error_analysis": {
+            "background_false_positives": 1,
+            "duplicate_detections": 2,
+            "false_negatives": 4,
+            "false_positives": 3,
+            "localization_failures": 0,
+            "low_confidence_matches": 1,
+            "unexplained_false_negatives": 3,
+        },
         "metrics": [
             {
                 "f1": 1.0,
