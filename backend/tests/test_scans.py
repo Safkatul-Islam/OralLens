@@ -2,6 +2,12 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.main import create_app
+from app.pipeline.inference import (
+    InferenceAssessment,
+    InferenceOutcome,
+    InvalidInferenceInputError,
+)
+from app.schemas import ScanRecord
 
 
 def png_bytes(extra_bytes: int = 32) -> bytes:
@@ -48,6 +54,7 @@ def test_create_scan_accepts_valid_png_upload(tmp_path):
     assert payload["prediction"]["model_name"] == "deterministic-mock-v1"
     assert payload["prediction"]["prediction_count"] == 0
     assert payload["prediction"]["detections"] == []
+    assert payload["input_assessment"]["status"] == "not_assessed"
     assert "mock score of 0." in payload["report"]["summary"]
     assert "% confidence" not in payload["report"]["summary"]
     assert any(
@@ -182,3 +189,91 @@ def test_get_scan_returns_404_for_unknown_id(tmp_path):
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Scan not found."
+
+
+def test_create_scan_persists_structured_abstention_without_prediction(tmp_path):
+    class AbstainingPipeline:
+        def predict(self, image_bytes: bytes, content_type: str) -> InferenceOutcome:
+            return InferenceOutcome(
+                assessment=InferenceAssessment(
+                    status="unsupported",
+                    reason_codes=("image_low_contrast",),
+                    image_width=640,
+                    image_height=480,
+                    mean_luminance=0.5,
+                    luminance_stddev=0.01,
+                ),
+                prediction=None,
+            )
+
+    settings = Settings(storage_path=tmp_path / "scans.json")
+    app = create_app(settings)
+    app.state.scan_service._inference_pipeline = AbstainingPipeline()
+    client = TestClient(app)
+
+    response = client.post(
+        "/scans",
+        files={"file": ("mouth.png", png_bytes(), "image/png")},
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["prediction"] is None
+    assert payload["input_assessment"]["status"] == "unsupported"
+    assert payload["input_assessment"]["reason_codes"] == ["image_low_contrast"]
+    assert "did not run" in payload["report"]["summary"]
+    assert "not a diagnosis" in payload["report"]["limitations"][2]
+
+
+def test_historical_scan_without_assessment_remains_readable():
+    payload = {
+        "id": "historical",
+        "created_at": "2026-08-01T00:00:00Z",
+        "original_filename": "mouth.png",
+        "content_type": "image/png",
+        "size_bytes": 8,
+        "sha256": "0" * 64,
+        "prediction": {
+            "label": "no_detection",
+            "display_name": "No detection",
+            "confidence": 0.0,
+            "severity": "low",
+            "is_mock": False,
+            "model_name": "historical-model",
+            "prediction_count": 0,
+            "detections": [],
+        },
+        "evidence": {"kind": "summary", "summary": "Historical result."},
+        "report": {
+            "title": "Historical report",
+            "summary": "Historical report.",
+            "limitations": [],
+            "recommended_next_steps": [],
+            "disclaimer": "Historical record.",
+        },
+    }
+
+    record = ScanRecord.model_validate(payload)
+
+    assert record.input_assessment.status == "not_assessed"
+    assert record.prediction is not None
+
+
+def test_create_scan_maps_undecodable_ml_input_to_safe_bad_request(tmp_path):
+    class InvalidImagePipeline:
+        def predict(self, image_bytes: bytes, content_type: str) -> InferenceOutcome:
+            raise InvalidInferenceInputError("Input image could not be decoded safely.")
+
+    settings = Settings(storage_path=tmp_path / "scans.json")
+    app = create_app(settings)
+    app.state.scan_service._inference_pipeline = InvalidImagePipeline()
+    client = TestClient(app)
+
+    response = client.post(
+        "/scans",
+        files={"file": ("mouth.png", png_bytes(), "image/png")},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Input image could not be decoded safely."
+    assert "Traceback" not in response.text
