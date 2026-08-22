@@ -1,178 +1,109 @@
-# Dataset Card: Orthodontic Plaque Part 2
+# Dataset Card: AIRC-LABDEN Orthodontic Plaque Part 2
 
-## Intended use
+## Purpose and permitted use
 
-This dataset supports restricted development and internal evaluation of plaque-status regions in standardized fixed-orthodontic photographs. It is used only for an experimental portfolio and learning project. Its region boxes are not precise outlines of visible plaque deposits and do not establish performance on consumer-style photographs.
+OralLens uses the verified Part 2 AIRC-LABDEN orthodontic-plaque dataset for a portfolio-scale object-detection experiment. The task is to localize **plaque-positive peri-tooth regions** in standardized fixed-orthodontic photographs.
 
-It must not be interpreted as sufficient evidence for diagnosis, clinical deployment, population-level claims, or medical-device performance.
+The annotations are not precise outlines of visible plaque deposits. Results from this dataset do not establish diagnosis, clinical safety, consumer-photo performance, or medical-device validity.
 
-## Data in use
+## Source material in use
 
-Prepared dataset root:
+Local dataset root:
 
 `ml/data/raw/orthodontic_plaque/v3/extracted/part-2/mendeley-dataset-materials_Part_2`
 
-Historical v3 prepared manifest:
+Prepared manifests:
 
-`ml/data/prepared/orthodontic_plaque/v3/part-2/manifest.csv`
+- historical manifest: `ml/data/prepared/orthodontic_plaque/v3/part-2/manifest.csv`
+- source-aware manifest used by the corrected experiments: `ml/data/prepared/orthodontic_plaque/v4/part-2/manifest.csv`
 
-Corrected source-aware v4 prepared manifest:
+Only verified Part 2 material is used. Part 1 remains excluded because its nested 7z archive failed the publisher-provided integrity check. The failed material was not repaired, substituted, or partially admitted.
 
-`ml/data/prepared/orthodontic_plaque/v4/part-2/manifest.csv`
+Raw data, prepared manifests, and generated run artifacts remain local and are excluded from version control.
 
-Only verified Part 2 material is used. Part 1 remains excluded because its nested 7z archive failed the official integrity check. The source archive was not silently repaired or substituted.
+## Annotation semantics
 
-## Structure and label contract
-
-Each manifest row represents one image sample and includes one or more annotated peri-tooth status regions. The boxes identify regions assessed for plaque presence; they are not deposit-segmentation masks or guaranteed tight plaque-localization boxes. Annotations use normalized center-width-height coordinates:
+Each manifest row represents one image and contains normalized center-width-height boxes around assessed peri-tooth regions:
 
 - `x_center`
 - `y_center`
 - `width`
 - `height`
 
-The source label is a plaque-presence attribute for each annotated region:
+The source label describes plaque status within the region:
 
-- `0`: plaque absent in the annotated region
-- `1`: plaque present in the annotated region
+- source label `0`: plaque absent in the annotated region
+- source label `1`: plaque present in the annotated region
 
-TorchVision's detector contract is different:
+TorchVision reserves detector class `0` for implicit background. Target conversion therefore validates both source values but emits detector objects only for source label `1`; the application exposes those class-1 objects as plaque-positive peri-tooth region candidates.
 
-- `0`: implicit background, reserved by TorchVision
-- `1`: plaque candidate
+The source-aware manifest contains 1,170 source class-0 regions and 64,068 source class-1 regions. Class-0 source regions remain in the manifest for provenance but are not converted into positive detector targets.
 
-Target conversion validates source labels in `{0, 1}` and emits detector objects only for source label `1`. Source label `0` boxes remain in the manifest for auditability but are not converted to plaque objects. All current manifest rows contain at least one source label `1`, so the dataset still does not represent a clinically sampled plaque-negative image or patient population.
+## Prepared population
 
-## Patient-aware splits
+The complete prepared release contains publisher-generated brightness, flip, blur, and rotation derivatives as well as genuine originals. Patients do not cross split boundaries.
 
-Patients do not cross split boundaries.
-
-| Split | Images | Patients | Annotations |
+| Split | Prepared images | Patients | All source annotations |
 |---|---:|---:|---:|
 | Train | 3,834 | 55 | 48,098 |
 | Validation | 468 | 7 | 6,070 |
 | Test | 858 | 12 | 11,070 |
 | **Total** | **5,160** | **74** | **65,238** |
 
-Source-label audit:
+Image count is not treated as independent-sample count because many rows are derivatives of the same photograph.
 
-| Split | Plaque absent (`0`) | Plaque present (`1`) | Total annotations |
-|---|---:|---:|---:|
-| Train | 996 | 47,102 | 48,098 |
-| Validation | 30 | 6,040 | 6,070 |
-| Test | 144 | 10,926 | 11,070 |
-| **Total** | **1,170** | **64,068** | **65,238** |
+## Genuine-original experiment population
 
-The validation split is used for operating-threshold selection. The test split measured fixed policies for v2 and v3 and was re-run for descriptive trustworthiness evidence. It is not used for threshold tuning, but it has been examined across model generations and is therefore an internal benchmark rather than a pristine external cohort.
+The final controlled experiment removed pre-generated derivatives as independent samples. Training used only genuine originals with conservative augmentation applied online. Validation and final test evaluation were also originals-only.
 
-## Validation controls
+| Split | Genuine originals | Patients | Foreground class-1 regions | Source class-0 regions |
+|---|---:|---:|---:|---:|
+| Train | 480 | 55 | 5,502 | 124 |
+| Validation | 58 | 7 | 710 | 4 |
+| Test | 107 | 12 | 1,293 | 23 |
+| **Total** | **645** | **74** | **7,505** | **151** |
 
-The project loader checks:
+All images from one patient remain in one split. Original/derivative families are kept together, and derivatives are not counted as independent validation or test observations.
 
-- required manifest columns and known split values
-- UTF-8/CSV and annotation JSON structure
-- positive annotation count
-- integer source labels restricted to `{0, 1}` during target conversion
-- numeric, finite annotation fields
-- individual normalized values in `[0,1]`
+The validation originals selected the epoch-9 checkpoint and score threshold `0.80`. The 107-image test population was used only after those choices were frozen for Experiment 1. This is a patient-held-out internal benchmark, not an independent external or consumer-photo cohort.
+
+## Validation and integrity controls
+
+The data boundary validates:
+
+- required columns, UTF-8/CSV structure, and known split values
+- JSON annotation structure and annotation counts
+- integer source labels restricted to `{0, 1}`
+- finite normalized numeric fields
 - safe relative POSIX image paths and supported extensions
-- containment within the configured dataset root
-- missing files and disallowed symlinks
+- resolved containment below the configured dataset root
+- missing files and disallowed symbolic links
+- derived box bounds and positive area
 
-Target conversion validates every source box before filtering, derives bounded corners, rejects invalid or degenerate geometry, and then retains only plaque-present regions as detector targets. Images with no retained positive targets are supported by the TorchVision training contract, although the current manifest has none.
+A full derived-corner audit found two annotations in one rotated test image crossing the normalized boundary by approximately `5e-7`. The shared conversion boundary permits at most `1e-6` tolerance, clips only tolerated crossings with TorchVision, and then revalidates positive area. Larger violations and degenerate boxes fail closed. The source manifest is not modified and no sample is silently skipped.
 
-## Boundary audit and policy
+## Historical label defect
 
-A complete structured audit checked whether derived corners crossed `[0,1]`. It found:
+Historical v1-v3 conversion mapped every source box to detector class `1`, including the 1,170 plaque-absent regions. Those checkpoints and their plaque-only metrics are invalid for the corrected task and are retained only as historical engineering evidence.
 
-- affected images: 1
-- affected annotations: 2
-- affected split: test only
-- maximum overflow: approximately `5e-7`
-- degenerate boxes after clipping: 0
+The corrected baseline and final Experiment 1 checkpoint use the source-aware class mapping. The final model is the originals-only online-augmentation candidate selected on validation at epoch 9; exact methodology and results are in [Training and evaluation](TRAINING.md).
 
-The affected sample was a rotated image. The scale of the crossings supports a floating-point/rotation-edge interpretation rather than major corruption.
+## Limitations
 
-The implemented policy allows at most `1e-6` of boundary tolerance, clips tolerated derived corners to the valid image extent with TorchVision, and then rejects non-positive boxes. Larger violations still fail closed. Source manifest values and metadata remain unchanged for auditability; no sample is silently skipped.
-
-## Historical target-conversion defect
-
-Historical v1-v3 target conversion assigned detector label `1` to every source annotation, including 1,170 regions whose source label was `0` (plaque absent). The defect is corrected and covered by regression tests, but the existing v1-v3 checkpoints were trained under the old mapping.
-
-Consequences:
-
-- v1-v3 checkpoints must not be resumed for the corrected experiment
-- v1-v3 precision, recall, F1, IoU, calibration, and patient-level results are not valid plaque-only evidence
-- existing metrics remain local historical artifacts for reproducibility and defect analysis
-- the stopped corrected v4 diagnostic does not provide model-quality evidence
-
-The active local application still uses v3 and therefore retains this known limitation.
-
-## Stopped corrected v4 diagnostic
-
-The source-aware v4 manifest was used in a fresh run initialized independently of v1-v3. The user stopped the experiment before epoch 3 after validation loss reversed:
-
-| Completed epoch | Training loss | Validation loss |
-|---:|---:|---:|
-| 1 | `0.7966761603586116` | `0.8249539341299962` |
-| 2 | `0.6149270393257503` | `1.028658177671779` |
-
-`checkpoint_best.pt` records epoch 1 and `checkpoint_last.pt` records epoch 2. Both checkpoints were inspected read-only with `weights_only=True`; they record `device_type="cuda"` and CUDA RNG state. This proves the completed epochs followed the CUDA code path, but historical utilization and throughput were not logged.
-
-The run was not evaluated, assigned an operating threshold, integrated with the backend, or promoted. Its artifacts remain isolated local evidence. Do not resume it or cite it as corrected plaque-detector performance.
-
-## Historical evaluation record
-
-Under the incorrect target mapping, v3 selected threshold `0.85` on 468 validation images and produced the following internal fixed-threshold measurements on 858 test images at IoU `0.5`:
-
-- precision: `0.7671`
-- recall: `0.7923`
-- F1: `0.7795`
-- mean matched IoU: `0.8102`
-
-These numbers are retained only to reproduce what the old pipeline reported. They mix plaque-present and plaque-absent source regions as positive objects and must not be cited as current detector quality, clinical sensitivity, specificity, or generalization.
-
-## Historical variation and failure evidence
-
-V3 trustworthiness reporting evaluated the same incorrect target contract at threshold `0.85` and the 25-detection cap. No validation image reached the cap. One test image exceeded it by one historical false positive; no historical true positive was truncated.
-
-Patient-level v3 F1 ranged from `0.6769` to `0.9245` on validation and from `0.6824` to `0.8889` on the internal test benchmark. These patients are dataset groups, not demographic or clinical subgroups, and the variation must not be interpreted as a fairness result.
-
-Dark brightness-down samples repeatedly appeared among images with the most false negatives on both splits. Blur also appeared in the internal test failure set. Because these conditions are source-dataset augmentations, they are useful hypotheses for controlled robustness testing but do not establish performance under real clinical acquisition conditions.
-
-V3 score-to-match ECE was `0.1940` on validation and `0.1878` on test. Because the matching targets included source label `0` regions as positives, these values are historical defect evidence rather than valid plaque score calibration. They are not probabilities of plaque or disease.
-
-## Known limitations
-
-- specialized orthodontic-plaque context rather than the full range of oral conditions
-- one source dataset and its acquisition/annotation conventions
-- peri-tooth plaque-status boxes rather than precise plaque-deposit outlines
-- no calculus/tartar annotation contract
-- only 74 patient groups; image and annotation counts overstate the number of independent clinical subjects
-- v1-v3 checkpoints and metrics use the incorrect historical source-label conversion
-- no representative plaque-negative cohort, so patient-level specificity, PPV/NPV, and rule-out claims cannot be established
-- generated rotations and related boundary behavior may not represent real capture variation
-- no demonstrated cross-clinic, cross-device, demographic, or geographic representativeness
-- labels may reflect annotator subjectivity and source-specific definitions
-- patient-aware splitting reduces direct leakage but does not remove all dataset bias
-- material patient-level performance variation exists within the current splits
-- synthetic darkness, blur, and rotation conventions may differ from real acquisition failures
-- absence of a returned box does not mean absence of a real oral-health concern
-- the internal test cohort has been inspected across model generations and cannot serve as fresh external evidence for future versions
-
-## Data handling
-
-Raw, prepared, and generated dataset artifacts are kept local and excluded from git. The source material is not rewritten during loading or target conversion. Exclusions and policy decisions must be recorded rather than silently applied.
-
-Future external use requires a fresh review of license terms, privacy, consent, provenance, intended use, and distribution restrictions. Candidate sources and admission rules are recorded in [Data strategy](DATA_STRATEGY.md).
+- one source family and only 74 patient groups
+- standardized fixed-orthodontic acquisition rather than consumer phone photography
+- peri-tooth plaque-status boxes rather than deposit outlines or masks
+- no representative image-level clean-mouth or consumer hard-negative population
+- no external site, device, demographic, or geographic evaluation
+- no calculus/tartar target contract
+- the 12-patient internal test is too small for broad clinical generalization or subgroup claims
+- the test partition has been inspected across model generations and is not a pristine future benchmark
+- a missing prediction cannot be interpreted as plaque-free or disease-free
 
 ## Related documents
 
-- [Data acquisition](DATA_ACQUISITION.md)
-- [Data strategy](DATA_STRATEGY.md)
-- [Data acquisition and annotation](DATA_ACQUISITION_AND_ANNOTATION.md)
-- [Intended use and claims](INTENDED_USE_AND_CLAIMS.md)
-- [Clinical evidence plan](CLINICAL_EVIDENCE_PLAN.md)
+- [Data acquisition and preparation](DATA_ACQUISITION.md)
 - [Training and evaluation](TRAINING.md)
 - [Architecture](ARCHITECTURE.md)
 - [ML guide](../ml/README.md)
+
