@@ -1,13 +1,23 @@
+import asyncio
+from io import BytesIO
+from threading import get_ident
+
+from fastapi import UploadFile
 from fastapi.testclient import TestClient
+from starlette.datastructures import Headers
 
 from app.config import Settings
 from app.main import create_app
 from app.pipeline.inference import (
     InferenceAssessment,
     InferenceOutcome,
+    InferenceResult,
     InvalidInferenceInputError,
+    MockInferencePipeline,
 )
 from app.schemas import ScanRecord
+from app.services.scan_service import ScanService
+from app.storage import JSONScanStore
 
 
 def png_bytes(extra_bytes: int = 32) -> bytes:
@@ -33,6 +43,20 @@ def make_ml_client(tmp_path) -> TestClient:
         ml_temp_dir=tmp_path / "ml-inputs",
     )
     return TestClient(create_app(settings))
+
+
+def production_settings(tmp_path) -> Settings:
+    config_path = tmp_path / "predict.toml"
+    config_path.write_text("[model]\n", encoding="utf-8")
+    return Settings(
+        runtime_mode="production",
+        inference_mode="ml",
+        ml_detection_config_path=config_path,
+        ml_temp_dir=tmp_path / "uploads",
+        ml_runtime_artifact_dir=tmp_path / "runtime-artifacts",
+        cors_allowed_origins=("https://orallens.example",),
+        storage_path=tmp_path / "scans.json",
+    )
 
 
 def test_create_scan_accepts_valid_png_upload(tmp_path):
@@ -66,6 +90,54 @@ def test_create_scan_accepts_valid_png_upload(tmp_path):
         for next_step in payload["report"]["recommended_next_steps"]
     )
     assert payload["report"]["disclaimer"]
+
+
+def test_scan_service_runs_inference_off_the_async_event_loop(tmp_path):
+    class ThreadRecordingPipeline:
+        def __init__(self) -> None:
+            self.inference_thread_id: int | None = None
+
+        def predict(self, image_bytes: bytes, content_type: str) -> InferenceOutcome:
+            self.inference_thread_id = get_ident()
+            return InferenceOutcome(
+                assessment=InferenceAssessment(status="not_assessed"),
+                prediction=InferenceResult(
+                    label="no_detection",
+                    display_name="No candidate regions",
+                    confidence=0.0,
+                    severity="low",
+                    evidence_summary="No candidate regions.",
+                    model_name="thread-test-model",
+                    is_mock=True,
+                ),
+            )
+
+    pipeline = ThreadRecordingPipeline()
+    settings = Settings(storage_path=tmp_path / "scans.json")
+    service = ScanService(
+        settings=settings,
+        store=JSONScanStore(settings.storage_path),
+        inference_pipeline=pipeline,
+    )
+
+    async def create_scan() -> tuple[int, ScanRecord]:
+        event_loop_thread_id = get_ident()
+        upload = UploadFile(
+            file=BytesIO(png_bytes()),
+            filename="mouth.png",
+            headers=Headers({"content-type": "image/png"}),
+        )
+        try:
+            record = await service.create_scan(upload)
+        finally:
+            await upload.close()
+        return event_loop_thread_id, record
+
+    event_loop_thread_id, record = asyncio.run(create_scan())
+
+    assert record.prediction is not None
+    assert pipeline.inference_thread_id is not None
+    assert pipeline.inference_thread_id != event_loop_thread_id
 
 
 def test_create_scan_allows_configured_loopback_origin(tmp_path):
@@ -180,6 +252,27 @@ def test_scan_history_and_detail_are_persisted(tmp_path):
     ]
     assert detail_response.status_code == 200
     assert detail_response.json()["id"] == second["id"]
+
+
+def test_production_post_is_nonpersistent_and_history_is_unavailable(tmp_path):
+    settings = production_settings(tmp_path)
+    client = TestClient(
+        create_app(settings, inference_pipeline=MockInferencePipeline())
+    )
+
+    create_response = client.post(
+        "/scans",
+        files={"file": ("mouth.png", png_bytes(), "image/png")},
+    )
+    list_response = client.get("/scans")
+    detail_response = client.get(f"/scans/{create_response.json()['id']}")
+
+    assert create_response.status_code == 201
+    assert list_response.status_code == 404
+    assert list_response.json()["detail"] == "Scan history is unavailable."
+    assert detail_response.status_code == 404
+    assert detail_response.json()["detail"] == "Scan history is unavailable."
+    assert not settings.storage_path.exists()
 
 
 def test_get_scan_returns_404_for_unknown_id(tmp_path):
