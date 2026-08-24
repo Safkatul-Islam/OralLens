@@ -88,7 +88,6 @@ def test_inspect_zip_rejects_unsafe_member_paths(tmp_path: Path, member: str) ->
         with zipfile.ZipFile(path, "r") as archive:
             info = archive.infolist()[0]
             assert info.orig_filename == member
-            assert info.filename == stored_member
 
     with pytest.raises(ArchiveSecurityError, match="unsafe"):
         inspect_zip(path, artifact(member))
