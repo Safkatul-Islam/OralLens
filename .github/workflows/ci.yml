@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend test and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Audit dependency tree
+        run: npm audit --audit-level=high
+
+      - name: Install Chromium runtime
+        run: npx playwright install --with-deps chromium
+
+      - name: Run frontend tests
+        run: npm test -- --project=chromium
+
+      - name: Build production bundle
+        run: npm run build
+
+  backend-ml:
+    name: Backend and ML inference tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      ORALLENS_RUN_ML_INTEGRATION: "0"
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            backend/pyproject.toml
+            ml/pyproject.toml
+            infra/docker/backend-cpu-requirements.txt
+
+      - name: Install CPU-only Torch runtime
+        run: >-
+          python -m pip install
+          --index-url https://download.pytorch.org/whl/cpu
+          torch==2.12.1+cpu torchvision==0.27.1+cpu
+
+      - name: Install application and test dependencies
+        run: >-
+          python -m pip install
+          --requirement infra/docker/backend-cpu-requirements.txt
+          --editable "./backend[dev]"
+          --editable ./ml
+
+      - name: Run backend tests
+        run: python -m pytest backend/tests -q -p no:cacheprovider
+
+      - name: Run ML tests
+        run: python -m pytest ml/tests -q -p no:cacheprovider
+
+  containers:
+    name: Compose and container builds
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ORALLENS_MODEL_CHECKPOINT_PATH: /tmp/orallens/checkpoint_best.pt
+      ORALLENS_FRONTEND_ORIGIN: http://localhost:8080
+      ORALLENS_API_BASE_URL: http://localhost:8000
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Validate Compose configuration
+        run: docker compose config --quiet
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build CPU backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/backend.Dockerfile
+          push: false
+          tags: orallens-backend:ci
+          cache-from: type=gha,scope=orallens-backend
+          cache-to: type=gha,mode=max,scope=orallens-backend
+
+      - name: Build frontend static image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/frontend.Dockerfile
+          push: false
+          tags: orallens-frontend:ci
+          cache-from: type=gha,scope=orallens-frontend
+          cache-to: type=gha,mode=max,scope=orallens-frontend
