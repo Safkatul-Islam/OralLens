@@ -4,6 +4,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import UploadFile, status
+from starlette.concurrency import run_in_threadpool
 
 from app.config import Settings
 from app.pipeline.inference import (
@@ -13,7 +14,7 @@ from app.pipeline.inference import (
     UnsupportedInferenceInputError,
 )
 from app.schemas import EvidenceResponse, ReportResponse, ScanRecord
-from app.storage import JSONScanStore
+from app.storage import ScanStore
 
 READ_CHUNK_BYTES = 1024 * 1024
 
@@ -25,24 +26,35 @@ class UploadValidationError(ValueError):
         self.detail = detail
 
 
+class ScanHistoryDisabledError(RuntimeError):
+    """Raised when public scan history is unavailable by runtime policy."""
+
+
 class ScanService:
     """Coordinates upload validation, inference, report creation, and storage."""
 
     def __init__(
         self,
         settings: Settings,
-        store: JSONScanStore,
+        store: ScanStore,
         inference_pipeline: InferencePipeline,
+        *,
+        history_enabled: bool = True,
     ) -> None:
         self._settings = settings
         self._store = store
         self._inference_pipeline = inference_pipeline
+        self._history_enabled = history_enabled
 
     async def create_scan(self, file: UploadFile) -> ScanRecord:
         content = await self._read_and_validate(file)
         digest = hashlib.sha256(content).hexdigest()
         try:
-            outcome = self._inference_pipeline.predict(content, file.content_type or "")
+            outcome = await run_in_threadpool(
+                self._inference_pipeline.predict,
+                content,
+                file.content_type or "",
+            )
         except UnsupportedInferenceInputError as exc:
             raise UploadValidationError(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, str(exc)) from exc
         except InvalidInferenceInputError as exc:
@@ -77,10 +89,16 @@ class ScanService:
         return self._store.save(record)
 
     def list_scans(self) -> list[ScanRecord]:
+        self._require_history()
         return self._store.list()
 
     def get_scan(self, scan_id: str) -> ScanRecord | None:
+        self._require_history()
         return self._store.get(scan_id)
+
+    def _require_history(self) -> None:
+        if not self._history_enabled:
+            raise ScanHistoryDisabledError("Scan history is unavailable.")
 
     async def _read_and_validate(self, file: UploadFile) -> bytes:
         self._validate_metadata(file)
