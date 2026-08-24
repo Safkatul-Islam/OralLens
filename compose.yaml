@@ -1,0 +1,75 @@
+name: orallens
+
+services:
+  backend:
+    image: orallens-backend:local
+    build:
+      context: .
+      dockerfile: infra/docker/backend.Dockerfile
+      args:
+        TORCH_VERSION: "2.12.1"
+        TORCHVISION_VERSION: "0.27.1"
+    environment:
+      ORALLENS_RUNTIME_MODE: production
+      ORALLENS_ENVIRONMENT: compose
+      ORALLENS_INFERENCE_MODE: ml
+      ORALLENS_ML_SOURCE_PATH: /opt/orallens/ml/src
+      ORALLENS_ML_DETECTION_CONFIG_PATH: /opt/orallens/ml/configs/orthodontic_plaque_detection_mvp_v4_originals_online_aug_predict.toml
+      ORALLENS_ML_TEMP_DIR: /tmp/orallens/uploads
+      ORALLENS_ML_RUNTIME_ARTIFACT_DIR: /tmp/orallens/artifacts
+      ORALLENS_ML_MAX_CONCURRENT_INFERENCES: "1"
+      ORALLENS_CORS_ALLOWED_ORIGINS: '["${ORALLENS_FRONTEND_ORIGIN:-http://localhost:8080}"]'
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+    ports:
+      - "127.0.0.1:${ORALLENS_BACKEND_PORT:-8000}:8000"
+    volumes:
+      - type: bind
+        source: ${ORALLENS_MODEL_CHECKPOINT_PATH:?Set ORALLENS_MODEL_CHECKPOINT_PATH to the absolute frozen checkpoint path}
+        target: /opt/orallens/ml/runs/detection/orthodontic_plaque_part2_mvp_v4_originals_online_aug/checkpoint_best.pt
+        read_only: true
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=5)"
+      interval: 10s
+      timeout: 6s
+      retries: 12
+      start_period: 120s
+    restart: unless-stopped
+
+  frontend:
+    image: orallens-frontend:local
+    build:
+      context: .
+      dockerfile: infra/docker/frontend.Dockerfile
+    environment:
+      ORALLENS_API_BASE_URL: ${ORALLENS_API_BASE_URL:-http://localhost:8000}
+    ports:
+      - "127.0.0.1:${ORALLENS_FRONTEND_PORT:-8080}:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - --quiet
+        - --spider
+        - http://127.0.0.1:8080/health/live
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
