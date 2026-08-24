@@ -2,9 +2,33 @@ from __future__ import annotations
 
 import json
 import threading
+from typing import Protocol
 from pathlib import Path
 
 from app.schemas import ScanRecord
+
+
+class ScanStore(Protocol):
+    """Storage boundary used by the scan service."""
+
+    def list(self) -> list[ScanRecord]: ...
+
+    def get(self, scan_id: str) -> ScanRecord | None: ...
+
+    def save(self, record: ScanRecord) -> ScanRecord: ...
+
+
+class NonPersistentScanStore:
+    """Production store that returns POST results without retaining scan data."""
+
+    def list(self) -> list[ScanRecord]:
+        return []
+
+    def get(self, scan_id: str) -> ScanRecord | None:
+        return None
+
+    def save(self, record: ScanRecord) -> ScanRecord:
+        return record
 
 
 class JSONScanStore:
