@@ -1,4 +1,7 @@
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier, Lock
+from time import sleep
 from types import SimpleNamespace
 
 import pytest
@@ -89,7 +92,10 @@ class FakeMLDetectionInferencePipeline(MLDetectionInferencePipeline):
     def _load_config(self) -> object:
         return object()
 
-    def _run_inference(self, config: object, image_path: Path) -> object:
+    def _load_runtime(self, config: object) -> object:
+        return config
+
+    def _run_inference(self, runtime: object, image_path: Path) -> object:
         assert image_path.is_file()
         return SimpleNamespace(
             model_name="orthodontic-plaque-mvp-v4-originals-online-aug-epoch9",
@@ -119,6 +125,7 @@ def test_ml_detection_pipeline_maps_predictions_and_removes_temp_file(
         ml_source_path=tmp_path,
         temp_dir=tmp_path / "ml-inputs",
     )
+    pipeline.initialize()
 
     outcome = pipeline.predict(b"\x89PNG\r\n\x1a\nimage-bytes", "image/png")
     assert outcome.assessment.status == "supported"
@@ -133,12 +140,67 @@ def test_ml_detection_pipeline_maps_predictions_and_removes_temp_file(
     assert list((tmp_path / "ml-inputs").iterdir()) == []
 
 
+def test_production_pipeline_removes_runtime_artifact(tmp_path: Path) -> None:
+    artifact_dir = tmp_path / "runtime-artifacts"
+
+    class ArtifactPipeline(FakeMLDetectionInferencePipeline):
+        def _run_inference(self, runtime: object, image_path: Path) -> object:
+            result = super()._run_inference(runtime, image_path)
+            output_path = artifact_dir / f"{image_path.stem}.json"
+            output_path.write_text("{}", encoding="utf-8")
+            return SimpleNamespace(**vars(result), output_path=output_path)
+
+    pipeline = ArtifactPipeline(
+        config_path=tmp_path / "predict.toml",
+        ml_source_path=tmp_path,
+        temp_dir=tmp_path / "ml-inputs",
+        runtime_artifact_dir=artifact_dir,
+        cleanup_runtime_artifacts=True,
+    )
+    pipeline.initialize()
+
+    outcome = pipeline.predict(b"\x89PNG\r\n\x1a\nimage-bytes", "image/png")
+
+    assert outcome.prediction is not None
+    assert list((tmp_path / "ml-inputs").iterdir()) == []
+    assert list(artifact_dir.iterdir()) == []
+
+
+def test_production_pipeline_refuses_to_remove_artifact_outside_root(
+    tmp_path: Path,
+) -> None:
+    artifact_dir = tmp_path / "runtime-artifacts"
+    outside_path = tmp_path / "outside.json"
+
+    class EscapingArtifactPipeline(FakeMLDetectionInferencePipeline):
+        def _run_inference(self, runtime: object, image_path: Path) -> object:
+            result = super()._run_inference(runtime, image_path)
+            outside_path.write_text("{}", encoding="utf-8")
+            return SimpleNamespace(**vars(result), output_path=outside_path)
+
+    pipeline = EscapingArtifactPipeline(
+        config_path=tmp_path / "predict.toml",
+        ml_source_path=tmp_path,
+        temp_dir=tmp_path / "ml-inputs",
+        runtime_artifact_dir=artifact_dir,
+        cleanup_runtime_artifacts=True,
+    )
+    pipeline.initialize()
+
+    with pytest.raises(InferencePipelineError, match="escapes"):
+        pipeline.predict(b"\x89PNG\r\n\x1a\nimage-bytes", "image/png")
+
+    assert outside_path.read_text(encoding="utf-8") == "{}"
+    assert list((tmp_path / "ml-inputs").iterdir()) == []
+
+
 def test_ml_detection_pipeline_rejects_webp_before_ml_runtime(tmp_path: Path) -> None:
     pipeline = FakeMLDetectionInferencePipeline(
         config_path=tmp_path / "predict.toml",
         ml_source_path=tmp_path,
         temp_dir=tmp_path / "ml-inputs",
     )
+    pipeline.initialize()
 
     with pytest.raises(InferencePipelineError, match="JPEG and PNG"):
         pipeline.predict(b"RIFF0000WEBP", "image/webp")
@@ -146,7 +208,7 @@ def test_ml_detection_pipeline_rejects_webp_before_ml_runtime(tmp_path: Path) ->
 
 def test_ml_detection_pipeline_rejects_missing_model_name(tmp_path: Path) -> None:
     class MissingModelNamePipeline(FakeMLDetectionInferencePipeline):
-        def _run_inference(self, config: object, image_path: Path) -> object:
+        def _run_inference(self, runtime: object, image_path: Path) -> object:
             assert image_path.is_file()
             return SimpleNamespace(predictions=())
 
@@ -155,6 +217,7 @@ def test_ml_detection_pipeline_rejects_missing_model_name(tmp_path: Path) -> Non
         ml_source_path=tmp_path,
         temp_dir=tmp_path / "ml-inputs",
     )
+    pipeline.initialize()
 
     with pytest.raises(InferencePipelineError, match="model name"):
         pipeline.predict(b"\x89PNG\r\n\x1a\nimage-bytes", "image/png")
@@ -166,7 +229,7 @@ def test_ml_detection_pipeline_returns_abstention_without_prediction(
     tmp_path: Path,
 ) -> None:
     class UnsupportedPipeline(FakeMLDetectionInferencePipeline):
-        def _run_inference(self, config: object, image_path: Path) -> object:
+        def _run_inference(self, runtime: object, image_path: Path) -> object:
             return SimpleNamespace(
                 model_name="orthodontic-plaque-mvp-v4-originals-online-aug-epoch9",
                 input_assessment=SimpleNamespace(
@@ -185,6 +248,7 @@ def test_ml_detection_pipeline_returns_abstention_without_prediction(
         ml_source_path=tmp_path,
         temp_dir=tmp_path / "ml-inputs",
     )
+    pipeline.initialize()
 
     outcome = pipeline.predict(b"\x89PNG\r\n\x1a\nimage-bytes", "image/png")
 
@@ -198,7 +262,7 @@ def test_ml_detection_pipeline_zero_boxes_is_not_a_plaque_free_finding(
     tmp_path: Path,
 ) -> None:
     class ZeroBoxPipeline(FakeMLDetectionInferencePipeline):
-        def _run_inference(self, config: object, image_path: Path) -> object:
+        def _run_inference(self, runtime: object, image_path: Path) -> object:
             return SimpleNamespace(
                 model_name="orthodontic-plaque-mvp-v4-originals-online-aug-epoch9",
                 input_assessment=SimpleNamespace(
@@ -217,6 +281,7 @@ def test_ml_detection_pipeline_zero_boxes_is_not_a_plaque_free_finding(
         ml_source_path=tmp_path,
         temp_dir=tmp_path / "ml-inputs",
     )
+    pipeline.initialize()
 
     outcome = pipeline.predict(b"\x89PNG\r\n\x1a\nimage-bytes", "image/png")
 
@@ -225,3 +290,80 @@ def test_ml_detection_pipeline_zero_boxes_is_not_a_plaque_free_finding(
     assert outcome.prediction.display_name == "No candidate regions"
     assert "does not establish" in outcome.prediction.evidence_summary
     assert "plaque-free" in outcome.prediction.evidence_summary
+
+
+def test_ml_detection_pipeline_initializes_runtime_once(tmp_path: Path) -> None:
+    class CountingPipeline(FakeMLDetectionInferencePipeline):
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__(**kwargs)
+            self.config_loads = 0
+            self.runtime_loads = 0
+
+        def _load_config(self) -> object:
+            self.config_loads += 1
+            return object()
+
+        def _load_runtime(self, config: object) -> object:
+            self.runtime_loads += 1
+            return config
+
+    pipeline = CountingPipeline(
+        config_path=tmp_path / "predict.toml",
+        ml_source_path=tmp_path,
+        temp_dir=tmp_path / "ml-inputs",
+    )
+
+    assert pipeline.is_ready is False
+    pipeline.initialize()
+    pipeline.initialize()
+    pipeline.predict(b"\x89PNG\r\n\x1a\nfirst", "image/png")
+    pipeline.predict(b"\x89PNG\r\n\x1a\nsecond", "image/png")
+
+    assert pipeline.is_ready is True
+    assert pipeline.config_loads == 1
+    assert pipeline.runtime_loads == 1
+
+
+def test_ml_detection_pipeline_bounds_concurrent_model_calls(tmp_path: Path) -> None:
+    class ConcurrencyPipeline(FakeMLDetectionInferencePipeline):
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__(**kwargs)
+            self.active_calls = 0
+            self.maximum_active_calls = 0
+            self._counter_lock = Lock()
+
+        def _run_inference(self, runtime: object, image_path: Path) -> object:
+            with self._counter_lock:
+                self.active_calls += 1
+                self.maximum_active_calls = max(
+                    self.maximum_active_calls,
+                    self.active_calls,
+                )
+            try:
+                sleep(0.05)
+                return super()._run_inference(runtime, image_path)
+            finally:
+                with self._counter_lock:
+                    self.active_calls -= 1
+
+    pipeline = ConcurrencyPipeline(
+        config_path=tmp_path / "predict.toml",
+        ml_source_path=tmp_path,
+        temp_dir=tmp_path / "ml-inputs",
+        max_concurrent_inferences=1,
+    )
+    pipeline.initialize()
+    barrier = Barrier(2)
+
+    def predict(index: int) -> InferenceOutcome:
+        barrier.wait()
+        return pipeline.predict(
+            b"\x89PNG\r\n\x1a\n" + bytes([index]),
+            "image/png",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(predict, range(2)))
+
+    assert len(outcomes) == 2
+    assert pipeline.maximum_active_calls == 1
