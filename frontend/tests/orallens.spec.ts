@@ -70,6 +70,29 @@ async function expectNoWcagViolations(page: Page) {
   expect(results.violations).toEqual([]);
 }
 
+test("runtime configuration selects the production API origin", async ({ page }) => {
+  const runtimeApiOrigin = "http://runtime-api.test:9000";
+  await page.addInitScript((apiOrigin) => {
+    window.__ORALLENS_RUNTIME_CONFIG__ = Object.freeze({
+      API_BASE_URL: apiOrigin,
+    });
+  }, runtimeApiOrigin);
+  await page.route(`${runtimeApiOrigin}/scans`, async (route) => {
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify(SCAN_RESPONSE),
+    });
+  });
+
+  await page.goto("/");
+  await expect(page.getByText(runtimeApiOrigin, { exact: true })).toBeVisible();
+  await selectPng(page);
+  await page.getByRole("button", { name: "Run scan" }).click();
+
+  await expect(page.getByRole("heading", { level: 2, name: "Plaque candidate" })).toBeVisible();
+});
+
 test("initial workspace is accessible by semantics and keyboard", async ({ page }) => {
   await page.goto("/");
 
