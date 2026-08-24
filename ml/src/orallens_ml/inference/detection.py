@@ -22,6 +22,7 @@ from orallens_ml.modeling.detection import (
     validate_checkpoint_compatibility,
 )
 from orallens_ml.inference.input_assessment import (
+    AssessedImage,
     InputAssessment,
     InputAssessmentError,
     InputAssessmentPolicy,
@@ -81,10 +82,17 @@ class DetectionInferenceResult:
     input_assessment: InputAssessment
 
 
-def load_detection_inference_config(config_path: Path) -> DetectionInferenceConfig:
+def load_detection_inference_config(
+    config_path: Path,
+    *,
+    path_base: Path | None = None,
+) -> DetectionInferenceConfig:
     """Load and validate a detection inference TOML file."""
 
     path = Path(config_path)
+    base = _path_base(path_base)
+    if base is not None and not path.is_absolute():
+        path = base / path
     if path.is_symlink() or not path.is_file():
         raise DetectionInferenceError(f"Inference config is not a regular file: {path}")
     try:
@@ -100,8 +108,8 @@ def load_detection_inference_config(config_path: Path) -> DetectionInferenceConf
 
     return DetectionInferenceConfig(
         model_name=_model_name(model, "model_name"),
-        checkpoint_path=_path_value(model, "checkpoint_path"),
-        output_dir=_path_value(output, "output_dir"),
+        checkpoint_path=_path_value(model, "checkpoint_path", path_base=base),
+        output_dir=_path_value(output, "output_dir", path_base=base),
         num_classes=_positive_int(model, "num_classes"),
         image_min_size=_positive_int(model, "image_min_size"),
         image_max_size=_positive_int(model, "image_max_size"),
@@ -129,13 +137,80 @@ def run_detection_inference(
 
     _validate_inference_inputs(config)
     _validate_input_image_path(image_path)
+    assessed_image = _load_assessed_image(config, image_path)
+    model: Module | None = None
+    device: torch.device | None = None
+    if assessed_image.assessment.is_supported:
+        device = _select_device(config.device)
+        model = _build_model(config, model_factory=model_factory).to(device)
+        _load_checkpoint(model, config.checkpoint_path, config=config, device=device)
+        model.eval()
+    return _run_assessed_inference(
+        config,
+        image_path=image_path,
+        assessed_image=assessed_image,
+        model=model,
+        device=device,
+    )
+
+
+class DetectionInferenceRuntime:
+    """A validated detector loaded once and reused for multiple predictions."""
+
+    def __init__(
+        self,
+        config: DetectionInferenceConfig,
+        *,
+        model_factory: Callable[[DetectionInferenceConfig], Module] | None = None,
+    ) -> None:
+        _validate_inference_inputs(config)
+        device = _select_device(config.device)
+        model = _build_model(config, model_factory=model_factory).to(device)
+        _load_checkpoint(model, config.checkpoint_path, config=config, device=device)
+        model.eval()
+        self._config = config
+        self._device = device
+        self._model = model
+
+    @property
+    def model_name(self) -> str:
+        return self._config.model_name
+
+    def predict(self, *, image_path: Path) -> DetectionInferenceResult:
+        """Run one prediction with the already-loaded detector."""
+
+        _validate_input_image_path(image_path)
+        assessed_image = _load_assessed_image(self._config, image_path)
+        return _run_assessed_inference(
+            self._config,
+            image_path=image_path,
+            assessed_image=assessed_image,
+            model=self._model,
+            device=self._device,
+        )
+
+
+def _load_assessed_image(
+    config: DetectionInferenceConfig,
+    image_path: Path,
+) -> AssessedImage:
     try:
-        assessed_image = load_and_assess_image(
+        return load_and_assess_image(
             image_path,
             policy=config.input_assessment_policy,
         )
     except InputAssessmentError as exc:
         raise InvalidDetectionImageError(str(exc)) from exc
+
+
+def _run_assessed_inference(
+    config: DetectionInferenceConfig,
+    *,
+    image_path: Path,
+    assessed_image: AssessedImage,
+    model: Module | None,
+    device: torch.device | None,
+) -> DetectionInferenceResult:
     assessment = assessed_image.assessment
     width = assessment.image_width
     height = assessment.image_height
@@ -144,12 +219,9 @@ def run_detection_inference(
     if assessment.is_supported:
         if assessed_image.image is None:
             raise DetectionInferenceError("Supported input is missing decoded image data")
+        if model is None or device is None:
+            raise DetectionInferenceError("Supported input requires a loaded detector")
         image = _pil_to_float_tensor(assessed_image.image)
-        device = _select_device(config.device)
-        model = _build_model(config, model_factory=model_factory).to(device)
-        _load_checkpoint(model, config.checkpoint_path, config=config, device=device)
-        model.eval()
-
         with torch.no_grad():
             outputs = model([image.to(device)])
         if not isinstance(outputs, list) or len(outputs) != 1:
@@ -379,13 +451,30 @@ def _table(payload: dict[str, object], name: str) -> dict[str, object]:
     return value
 
 
-def _path_value(payload: dict[str, object], key: str) -> Path:
+def _path_base(path_base: Path | None) -> Path | None:
+    if path_base is None:
+        return None
+    base = Path(path_base)
+    if base.is_symlink() or not base.is_dir():
+        raise DetectionInferenceError("Inference path base is not a regular directory")
+    return base.resolve(strict=True)
+
+
+def _path_value(
+    payload: dict[str, object],
+    key: str,
+    *,
+    path_base: Path | None = None,
+) -> Path:
     value = payload.get(key)
     if not isinstance(value, str) or not value.strip():
         raise DetectionInferenceError(f"{key} must be a non-empty string path")
     if "\x00" in value:
         raise DetectionInferenceError(f"{key} contains a null byte")
-    return Path(value)
+    path = Path(value)
+    if path_base is not None and not path.is_absolute():
+        return (path_base / path).resolve(strict=False)
+    return path
 
 
 def _model_name(payload: dict[str, object], key: str) -> str:
