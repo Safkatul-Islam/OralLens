@@ -1,7 +1,8 @@
 import hashlib
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
+from threading import BoundedSemaphore, Lock
 from typing import Literal, Protocol
 from uuid import uuid4
 
@@ -135,6 +136,13 @@ class InferenceOutcome:
 class InferencePipeline(Protocol):
     """Backend inference contract used by the scan service."""
 
+    @property
+    def is_ready(self) -> bool:
+        """Return whether startup initialization completed successfully."""
+
+    def initialize(self) -> None:
+        """Initialize reusable resources required for inference."""
+
     def predict(self, image_bytes: bytes, content_type: str) -> InferenceOutcome:
         """Return screening-support predictions for validated image bytes."""
 
@@ -162,6 +170,16 @@ class MockInferencePipeline:
             "Mock mode selected an inflammation-like finding from the image hash.",
         ),
     )
+
+    def __init__(self) -> None:
+        self._is_ready = False
+
+    @property
+    def is_ready(self) -> bool:
+        return self._is_ready
+
+    def initialize(self) -> None:
+        self._is_ready = True
 
     def predict(self, image_bytes: bytes, content_type: str) -> InferenceOutcome:
         digest = hashlib.sha256(image_bytes + content_type.encode("utf-8")).digest()
@@ -191,10 +209,64 @@ class MLDetectionInferencePipeline:
         config_path: Path,
         ml_source_path: Path,
         temp_dir: Path,
+        max_concurrent_inferences: int = 1,
+        project_root: Path | None = None,
+        runtime_artifact_dir: Path | None = None,
+        cleanup_runtime_artifacts: bool = False,
     ) -> None:
+        if max_concurrent_inferences < 1:
+            raise InferencePipelineError(
+                "max_concurrent_inferences must be at least one."
+            )
         self._config_path = Path(config_path)
         self._ml_source_path = Path(ml_source_path)
         self._temp_dir = Path(temp_dir)
+        self._project_root = Path(project_root) if project_root is not None else None
+        self._runtime_artifact_dir = (
+            Path(runtime_artifact_dir) if runtime_artifact_dir is not None else None
+        )
+        self._cleanup_runtime_artifacts = cleanup_runtime_artifacts
+        if cleanup_runtime_artifacts and runtime_artifact_dir is None:
+            raise InferencePipelineError(
+                "Runtime artifact cleanup requires an explicit artifact directory."
+            )
+        self._temp_root: Path | None = None
+        self._runtime_artifact_root: Path | None = None
+        self._runtime: object | None = None
+        self._initialization_lock = Lock()
+        self._inference_slots = BoundedSemaphore(max_concurrent_inferences)
+
+    @property
+    def is_ready(self) -> bool:
+        return self._runtime is not None
+
+    def initialize(self) -> None:
+        """Load and validate the frozen model exactly once."""
+
+        if self._runtime is not None:
+            return
+        with self._initialization_lock:
+            if self._runtime is not None:
+                return
+            try:
+                self._temp_root = self._prepare_runtime_directory(
+                    self._temp_dir,
+                    label="ML temp",
+                )
+                if self._runtime_artifact_dir is not None:
+                    self._runtime_artifact_root = self._prepare_runtime_directory(
+                        self._runtime_artifact_dir,
+                        label="ML runtime artifact",
+                    )
+                config = self._load_config()
+                runtime = self._load_runtime(config)
+            except InferencePipelineError:
+                raise
+            except Exception as exc:
+                raise InferencePipelineError(
+                    "ML inference initialization failed."
+                ) from exc
+            self._runtime = runtime
 
     def predict(self, image_bytes: bytes, content_type: str) -> InferenceOutcome:
         suffix = _ML_CONTENT_TYPE_SUFFIXES.get(content_type)
@@ -202,11 +274,15 @@ class MLDetectionInferencePipeline:
             raise UnsupportedInferenceInputError(
                 "ML inference currently supports JPEG and PNG images."
             )
+        runtime = self._runtime
+        if runtime is None:
+            raise InferencePipelineError("ML inference pipeline is not ready.")
 
         input_path = self._write_temp_image(image_bytes, suffix)
+        result: object | None = None
         try:
-            config = self._load_config()
-            result = self._run_inference(config, input_path)
+            with self._inference_slots:
+                result = self._run_inference(runtime, input_path)
             return self._to_inference_outcome(result)
         except InferencePipelineError:
             raise
@@ -214,12 +290,13 @@ class MLDetectionInferencePipeline:
             raise InferencePipelineError("ML inference failed.") from exc
         finally:
             input_path.unlink(missing_ok=True)
+            if self._cleanup_runtime_artifacts and result is not None:
+                self._remove_runtime_artifact(result)
 
     def _write_temp_image(self, image_bytes: bytes, suffix: str) -> Path:
-        if self._temp_dir.is_symlink():
-            raise InferencePipelineError("ML temp directory is a symlink.")
-        self._temp_dir.mkdir(parents=True, exist_ok=True)
-        root = self._temp_dir.resolve(strict=True)
+        root = self._temp_root
+        if root is None:
+            raise InferencePipelineError("ML temp directory is not initialized.")
         input_path = root / f"{uuid4()}{suffix}"
         resolved = input_path.resolve(strict=False)
         if not resolved.is_relative_to(root):
@@ -227,21 +304,56 @@ class MLDetectionInferencePipeline:
         input_path.write_bytes(image_bytes)
         return input_path
 
+    def _prepare_runtime_directory(self, path: Path, *, label: str) -> Path:
+        if path.is_symlink():
+            raise InferencePipelineError(f"{label} directory is a symlink.")
+        path.mkdir(parents=True, exist_ok=True)
+        if not path.is_dir():
+            raise InferencePipelineError(f"{label} path is not a directory.")
+        return path.resolve(strict=True)
+
+    def _remove_runtime_artifact(self, result: object) -> None:
+        root = self._runtime_artifact_root
+        output_value = getattr(result, "output_path", None)
+        if root is None or not isinstance(output_value, Path):
+            raise InferencePipelineError(
+                "ML inference result is missing its runtime artifact path."
+            )
+        if output_value.is_symlink():
+            raise InferencePipelineError("ML runtime artifact is a symlink.")
+        resolved_output = output_value.resolve(strict=False)
+        if not resolved_output.is_relative_to(root):
+            raise InferencePipelineError(
+                "ML runtime artifact path escapes its configured directory."
+            )
+        if resolved_output.exists() and not resolved_output.is_file():
+            raise InferencePipelineError("ML runtime artifact is not a regular file.")
+        resolved_output.unlink(missing_ok=True)
+
     def _load_config(self) -> object:
         self._add_ml_source_path()
         from orallens_ml.inference.detection import load_detection_inference_config
 
-        return load_detection_inference_config(self._config_path)
-
-    def _run_inference(self, config: object, image_path: Path) -> object:
-        self._add_ml_source_path()
-        from orallens_ml.inference.detection import (
-            InvalidDetectionImageError,
-            run_detection_inference,
+        config = load_detection_inference_config(
+            self._config_path,
+            path_base=self._project_root,
         )
+        if self._runtime_artifact_root is not None:
+            config = replace(config, output_dir=self._runtime_artifact_root)
+        return config
+
+    def _load_runtime(self, config: object) -> object:
+        self._add_ml_source_path()
+        from orallens_ml.inference.detection import DetectionInferenceRuntime
+
+        return DetectionInferenceRuntime(config)
+
+    def _run_inference(self, runtime: object, image_path: Path) -> object:
+        self._add_ml_source_path()
+        from orallens_ml.inference.detection import InvalidDetectionImageError
 
         try:
-            return run_detection_inference(config, image_path=image_path)
+            return runtime.predict(image_path=image_path)
         except InvalidDetectionImageError as exc:
             raise InvalidInferenceInputError(str(exc)) from exc
 
