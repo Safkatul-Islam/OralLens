@@ -57,7 +57,31 @@ type ApiError = {
   detail?: string;
 };
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
+function resolveApiBaseUrl() {
+  const configuredValue =
+    window.__ORALLENS_RUNTIME_CONFIG__?.API_BASE_URL ??
+    import.meta.env.VITE_API_BASE_URL ??
+    "http://127.0.0.1:8000";
+  const normalizedValue = configuredValue.trim().replace(/\/+$/, "");
+
+  try {
+    const parsed = new URL(normalizedValue);
+    if (
+      !["http:", "https:"].includes(parsed.protocol) ||
+      parsed.username ||
+      parsed.password ||
+      parsed.origin !== normalizedValue
+    ) {
+      throw new Error();
+    }
+  } catch {
+    throw new Error("OralLens API URL must be an explicit HTTP(S) origin.");
+  }
+
+  return normalizedValue;
+}
+
+const API_BASE_URL = resolveApiBaseUrl();
 const SUPPORTED_IMAGE_EXTENSIONS: Record<string, readonly string[]> = {
   "image/jpeg": [".jpg", ".jpeg"],
   "image/png": [".png"],
