@@ -3,7 +3,11 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
 
 from app.schemas import ErrorResponse, ScanListResponse, ScanRecord
-from app.services.scan_service import ScanService, UploadValidationError
+from app.services.scan_service import (
+    ScanHistoryDisabledError,
+    ScanService,
+    UploadValidationError,
+)
 
 router = APIRouter(prefix="/scans", tags=["scans"])
 
@@ -36,7 +40,10 @@ async def create_scan(
 def list_scans(
     service: Annotated[ScanService, Depends(get_scan_service)],
 ) -> ScanListResponse:
-    return ScanListResponse(scans=service.list_scans())
+    try:
+        return ScanListResponse(scans=service.list_scans())
+    except ScanHistoryDisabledError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 @router.get(
@@ -48,7 +55,10 @@ def get_scan(
     scan_id: str,
     service: Annotated[ScanService, Depends(get_scan_service)],
 ) -> ScanRecord:
-    record = service.get_scan(scan_id)
+    try:
+        record = service.get_scan(scan_id)
+    except ScanHistoryDisabledError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scan not found.")
     return record
