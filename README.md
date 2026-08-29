@@ -160,3 +160,13 @@ The measured result supports an object-detection engineering case study. It does
 - [Dataset card](docs/DATASET_CARD.md) - source provenance and dataset constraints
 - [ML environment](docs/ML_ENVIRONMENT.md) - project-local setup
 - [Backend guide](backend/README.md), [Frontend guide](frontend/README.md), [ML guide](ml/README.md)
+
+## License
+
+The source code in this repository is released under the [MIT License](LICENSE).
+
+The MIT license covers this project's own source code only. Datasets, pretrained
+or derived model weights, and third-party assets are not covered by it and remain
+subject to their own licenses and terms of use. No dataset or checkpoint is
+distributed in this repository; see the [Dataset card](docs/DATASET_CARD.md) for
+source provenance.
