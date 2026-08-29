@@ -24,6 +24,7 @@ COPY backend/app /opt/orallens/backend/app
 COPY ml/src /opt/orallens/ml/src
 COPY ml/configs/orthodontic_plaque_detection_mvp_v4_originals_online_aug_predict.toml \
     /opt/orallens/ml/configs/orthodontic_plaque_detection_mvp_v4_originals_online_aug_predict.toml
+COPY infra/render /opt/orallens/infra/render
 
 RUN groupadd --gid 10001 orallens \
     && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin orallens \
@@ -31,7 +32,11 @@ RUN groupadd --gid 10001 orallens \
         /opt/orallens/ml/runs/detection/orthodontic_plaque_part2_mvp_v4_originals_online_aug \
         /tmp/orallens/uploads \
         /tmp/orallens/artifacts \
-    && chown -R orallens:orallens /tmp/orallens
+    && sed -i 's/\r$//' /opt/orallens/infra/render/start-backend.sh \
+    && chmod 0555 /opt/orallens/infra/render/start-backend.sh \
+    && chown -R orallens:orallens \
+        /opt/orallens/ml/runs/detection/orthodontic_plaque_part2_mvp_v4_originals_online_aug \
+        /tmp/orallens
 
 USER 10001:10001
 
