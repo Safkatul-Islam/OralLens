@@ -1,0 +1,74 @@
+services:
+  - type: web
+    name: orallens-api
+    runtime: docker
+    plan: standard
+    region: oregon
+    dockerfilePath: ./infra/docker/backend.Dockerfile
+    dockerCommand: /opt/orallens/infra/render/start-backend.sh
+    healthCheckPath: /health/ready
+    maxShutdownDelaySeconds: 30
+    envVars:
+      - key: ORALLENS_RUNTIME_MODE
+        value: production
+      - key: ORALLENS_ENVIRONMENT
+        value: render
+      - key: ORALLENS_INFERENCE_MODE
+        value: ml
+      - key: ORALLENS_ML_SOURCE_PATH
+        value: /opt/orallens/ml/src
+      - key: ORALLENS_ML_DETECTION_CONFIG_PATH
+        value: /opt/orallens/ml/configs/orthodontic_plaque_detection_mvp_v4_originals_online_aug_predict.toml
+      - key: ORALLENS_ML_TEMP_DIR
+        value: /tmp/orallens/uploads
+      - key: ORALLENS_ML_RUNTIME_ARTIFACT_DIR
+        value: /tmp/orallens/artifacts
+      - key: ORALLENS_ML_MAX_CONCURRENT_INFERENCES
+        value: "1"
+      - key: ORALLENS_CORS_ALLOWED_ORIGINS
+        sync: false
+      - key: ORALLENS_HF_REPOSITORY
+        sync: false
+      - key: ORALLENS_HF_REVISION
+        sync: false
+      - key: ORALLENS_HF_FILENAME
+        value: checkpoint_best.pt
+      - key: ORALLENS_HF_TOKEN
+        sync: false
+      - key: ORALLENS_MODEL_ARTIFACT_SHA256
+        value: 79cbb3b99d56f77e852b5096446649eff17858a25b5fd40dab9408fa7a2f19d7
+      - key: ORALLENS_MODEL_ARTIFACT_SIZE_BYTES
+        value: "330069425"
+      - key: ORALLENS_MODEL_ARTIFACT_MAX_BYTES
+        value: "350000000"
+      - key: PYTHONDONTWRITEBYTECODE
+        value: "1"
+      - key: PYTHONUNBUFFERED
+        value: "1"
+
+  - type: web
+    name: orallens
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./dist
+    envVars:
+      - key: VITE_API_BASE_URL
+        sync: false
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    headers:
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: Referrer-Policy
+        value: no-referrer
+      - path: /assets/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable
