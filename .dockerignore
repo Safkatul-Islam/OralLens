@@ -29,6 +29,8 @@
 !infra/docker/**
 !infra/nginx/
 !infra/nginx/**
+!infra/render/
+!infra/render/**
 
 **/__pycache__/
 **/*.py[cod]
