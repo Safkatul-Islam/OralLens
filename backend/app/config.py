@@ -59,6 +59,7 @@ class Settings(BaseSettings):
         default_factory=default_ml_runtime_artifact_dir
     )
     ml_max_concurrent_inferences: int = Field(default=1, ge=1)
+    ml_delete_checkpoint_after_load: bool = False
     request_id_header: str = "X-Request-ID"
     cors_allowed_origins: tuple[str, ...] = (
         "http://127.0.0.1:5173",

@@ -213,6 +213,7 @@ class MLDetectionInferencePipeline:
         project_root: Path | None = None,
         runtime_artifact_dir: Path | None = None,
         cleanup_runtime_artifacts: bool = False,
+        delete_checkpoint_after_load: bool = False,
     ) -> None:
         if max_concurrent_inferences < 1:
             raise InferencePipelineError(
@@ -226,9 +227,14 @@ class MLDetectionInferencePipeline:
             Path(runtime_artifact_dir) if runtime_artifact_dir is not None else None
         )
         self._cleanup_runtime_artifacts = cleanup_runtime_artifacts
+        self._delete_checkpoint_after_load = delete_checkpoint_after_load
         if cleanup_runtime_artifacts and runtime_artifact_dir is None:
             raise InferencePipelineError(
                 "Runtime artifact cleanup requires an explicit artifact directory."
+            )
+        if delete_checkpoint_after_load and project_root is None:
+            raise InferencePipelineError(
+                "Checkpoint deletion requires an explicit project root."
             )
         self._temp_root: Path | None = None
         self._runtime_artifact_root: Path | None = None
@@ -260,6 +266,8 @@ class MLDetectionInferencePipeline:
                     )
                 config = self._load_config()
                 runtime = self._load_runtime(config)
+                if self._delete_checkpoint_after_load:
+                    self._remove_loaded_checkpoint(config)
             except InferencePipelineError:
                 raise
             except Exception as exc:
@@ -267,6 +275,31 @@ class MLDetectionInferencePipeline:
                     "ML inference initialization failed."
                 ) from exc
             self._runtime = runtime
+
+    def _remove_loaded_checkpoint(self, config: object) -> None:
+        checkpoint_value = getattr(config, "checkpoint_path", None)
+        if not isinstance(checkpoint_value, Path):
+            raise InferencePipelineError(
+                "Loaded ML config is missing its checkpoint path."
+            )
+        project_root = self._project_root
+        if project_root is None:
+            raise InferencePipelineError(
+                "Checkpoint deletion requires an explicit project root."
+            )
+        if project_root.is_symlink() or not project_root.is_dir():
+            raise InferencePipelineError("Project root is not a regular directory.")
+        if checkpoint_value.is_symlink() or not checkpoint_value.is_file():
+            raise InferencePipelineError(
+                "Loaded checkpoint is not a regular file."
+            )
+        resolved_root = project_root.resolve(strict=True)
+        resolved_checkpoint = checkpoint_value.resolve(strict=True)
+        if not resolved_checkpoint.is_relative_to(resolved_root):
+            raise InferencePipelineError(
+                "Loaded checkpoint path escapes the project root."
+            )
+        resolved_checkpoint.unlink()
 
     def predict(self, image_bytes: bytes, content_type: str) -> InferenceOutcome:
         suffix = _ML_CONTENT_TYPE_SUFFIXES.get(content_type)

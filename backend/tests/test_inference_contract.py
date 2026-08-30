@@ -324,6 +324,89 @@ def test_ml_detection_pipeline_initializes_runtime_once(tmp_path: Path) -> None:
     assert pipeline.runtime_loads == 1
 
 
+def test_pipeline_deletes_checkpoint_only_after_successful_initialization(
+    tmp_path: Path,
+) -> None:
+    checkpoint_path = tmp_path / "checkpoint_best.pt"
+    checkpoint_path.write_bytes(b"frozen checkpoint")
+
+    class DeletingPipeline(FakeMLDetectionInferencePipeline):
+        def _load_config(self) -> object:
+            return SimpleNamespace(checkpoint_path=checkpoint_path)
+
+        def _load_runtime(self, config: object) -> object:
+            assert checkpoint_path.is_file()
+            return config
+
+    pipeline = DeletingPipeline(
+        config_path=tmp_path / "predict.toml",
+        ml_source_path=tmp_path,
+        temp_dir=tmp_path / "ml-inputs",
+        project_root=tmp_path,
+        delete_checkpoint_after_load=True,
+    )
+
+    pipeline.initialize()
+
+    assert pipeline.is_ready is True
+    assert not checkpoint_path.exists()
+
+
+def test_pipeline_preserves_checkpoint_when_initialization_fails(
+    tmp_path: Path,
+) -> None:
+    checkpoint_path = tmp_path / "checkpoint_best.pt"
+    checkpoint_path.write_bytes(b"frozen checkpoint")
+
+    class FailingPipeline(FakeMLDetectionInferencePipeline):
+        def _load_config(self) -> object:
+            return SimpleNamespace(checkpoint_path=checkpoint_path)
+
+        def _load_runtime(self, config: object) -> object:
+            raise RuntimeError("model load failed")
+
+    pipeline = FailingPipeline(
+        config_path=tmp_path / "predict.toml",
+        ml_source_path=tmp_path,
+        temp_dir=tmp_path / "ml-inputs",
+        project_root=tmp_path,
+        delete_checkpoint_after_load=True,
+    )
+
+    with pytest.raises(InferencePipelineError, match="initialization failed"):
+        pipeline.initialize()
+
+    assert pipeline.is_ready is False
+    assert checkpoint_path.is_file()
+
+
+def test_pipeline_refuses_to_delete_checkpoint_outside_project_root(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    checkpoint_path = tmp_path / "checkpoint_best.pt"
+    checkpoint_path.write_bytes(b"frozen checkpoint")
+
+    class EscapingCheckpointPipeline(FakeMLDetectionInferencePipeline):
+        def _load_config(self) -> object:
+            return SimpleNamespace(checkpoint_path=checkpoint_path)
+
+    pipeline = EscapingCheckpointPipeline(
+        config_path=project_root / "predict.toml",
+        ml_source_path=project_root,
+        temp_dir=project_root / "ml-inputs",
+        project_root=project_root,
+        delete_checkpoint_after_load=True,
+    )
+
+    with pytest.raises(InferencePipelineError, match="escapes"):
+        pipeline.initialize()
+
+    assert pipeline.is_ready is False
+    assert checkpoint_path.is_file()
+
+
 def test_ml_detection_pipeline_bounds_concurrent_model_calls(tmp_path: Path) -> None:
     class ConcurrencyPipeline(FakeMLDetectionInferencePipeline):
         def __init__(self, **kwargs: object) -> None:

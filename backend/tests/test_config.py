@@ -27,7 +27,10 @@ def test_default_ml_detection_config_selects_final_model() -> None:
 
 
 def test_ml_concurrency_defaults_to_one() -> None:
-    assert Settings().ml_max_concurrent_inferences == 1
+    settings = Settings()
+
+    assert settings.ml_max_concurrent_inferences == 1
+    assert settings.ml_delete_checkpoint_after_load is False
 
 
 def test_ml_concurrency_must_be_positive() -> None:

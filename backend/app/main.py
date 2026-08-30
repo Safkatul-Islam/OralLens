@@ -34,6 +34,11 @@ def _build_inference_pipeline(settings: Settings) -> InferencePipeline:
                 else None
             ),
             cleanup_runtime_artifacts=settings.runtime_mode == "production",
+            delete_checkpoint_after_load=(
+                settings.ml_delete_checkpoint_after_load
+                if settings.runtime_mode == "production"
+                else False
+            ),
         )
     return MockInferencePipeline()
 
